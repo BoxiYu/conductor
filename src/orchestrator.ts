@@ -27,13 +27,17 @@ import { log } from "./log.ts";
 
 export const MARKER = "<!-- conductor -->";
 
-export function protocolFooter(): string {
+export function protocolFooter(verifyCommands: string[] = []): string {
+  const verify = verifyCommands.length
+    ? `\n- Verify your work by running: ${verifyCommands.map((c) => `\`${c}\``).join(", ")}. Fix failures you caused. If a command is not permitted in this environment, say so in your summary; that alone is not a reason to report "blocked".`
+    : "";
   return `
 
 ---
 Conductor protocol (always applies):
 - You are running unattended. Nobody will answer questions; make reasonable decisions and keep going.
-- Work only inside the current directory. Commit your work with clear messages on the current branch. Do not push and do not open pull requests: Conductor does that after you finish.
+- Work only inside the current directory. Commit your work with clear messages on the current branch if you can. If committing is not permitted, leave the changes in the working tree: Conductor commits them for you, so never report "blocked" just because you cannot commit.
+- Do not push and do not open pull requests: Conductor does that after you finish.${verify}
 - When the task is complete, write \`${REPORT_FILE}\` containing JSON: {"status":"done","summary":"<what you changed and how you verified it>","pr_title":"<short PR title>"}.
 - If you cannot proceed because something outside your control is missing (access, secrets, unclear requirements), write {"status":"blocked","summary":"<what is missing and what a human must do>"} to the same file.
 - Until that file exists, Conductor will keep asking you to continue.`;
@@ -152,6 +156,14 @@ export class Orchestrator {
       entry.abort.abort();
     }
     await Promise.allSettled(this.workerPromises.values());
+  }
+
+  /** Wait until nothing is running and no retry is queued (used by --once). */
+  async drain() {
+    while (this.running.size > 0 || this.retries.size > 0) {
+      await Promise.allSettled(this.workerPromises.values());
+      if (this.running.size === 0 && this.retries.size > 0) await Bun.sleep(200);
+    }
   }
 
   private scheduleTick(delay: number) {
@@ -351,7 +363,7 @@ export class Orchestrator {
                 attempt: entry.attempt || null,
                 agent,
                 feedback,
-              })) + protocolFooter()
+              })) + protocolFooter(config.verify.commands)
             : continuationPrompt(turn, config.agent.maxTurns);
 
         const result = await this.runTurnImpl({

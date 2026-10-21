@@ -28,6 +28,12 @@ export interface AgentConfig {
   newArgs: string[];
   /** Extra args only for resumed turns. */
   resumeArgs: string[];
+  /**
+   * Shell commands the agent may run without approval, as prefixes (e.g. "git commit").
+   * Only the claude adapter turns these into permission rules (`--allowedTools "Bash(<cmd>:*)"`);
+   * other CLIs use their own sandbox settings in `args`.
+   */
+  allowedCommands: string[];
   maxConcurrent: number;
   enabled: boolean;
 }
@@ -81,6 +87,8 @@ export interface Config {
     openPullRequest: boolean;
     draft: boolean;
   };
+  /** Commands the agent should run to verify its work, e.g. ["bun test"]. */
+  verify: { commands: string[] };
   server: { port: number | null };
   agents: Record<string, AgentConfig>;
 }

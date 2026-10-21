@@ -10,6 +10,7 @@ const cfg = (kind: AgentKind, args: string[] = []): AgentConfig => ({
   args,
   newArgs: [],
   resumeArgs: [],
+  allowedCommands: [],
   maxConcurrent: 1,
   enabled: true,
 });
@@ -56,6 +57,13 @@ describe("claude adapter", () => {
   test("argv puts prompt after --", () => {
     const argv = ADAPTERS.claude.argv(cfg("claude", ["--allowedTools", "Read", "Edit"]), "fix", "S1");
     expect(argv.slice(0, 7)).toEqual(["claude", "-p", "--output-format", "stream-json", "--verbose", "--resume", "S1"]);
+    expect(argv.slice(-2)).toEqual(["--", "fix"]);
+  });
+
+  test("allowed commands become Bash permission rules before the prompt", () => {
+    const c = { ...cfg("claude", ["--permission-mode", "acceptEdits"]), allowedCommands: ["git commit", "bun test"] };
+    const argv = ADAPTERS.claude.argv(c, "fix", null);
+    expect(argv.slice(5, 8)).toEqual(["--allowedTools", "Bash(git commit:*)", "Bash(bun test:*)"]);
     expect(argv.slice(-2)).toEqual(["--", "fix"]);
   });
 

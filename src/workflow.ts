@@ -11,6 +11,9 @@ export class WorkflowError extends Error {}
 
 const AGENT_KINDS: AgentKind[] = ["codex", "claude", "agy", "grok"];
 
+/** Read-only and local-commit git commands. Push stays with Conductor. */
+export const DEFAULT_ALLOWED_COMMANDS = ["git status", "git diff", "git log", "git add", "git commit"];
+
 /**
  * Default per-agent flags. They keep each CLI inside the workspace and auto-accept file edits,
  * but do not hand out unrestricted shell access. For fully unattended runs inside a container
@@ -115,12 +118,14 @@ function buildConfig(raw: Obj, baseDir: string, env: NodeJS.ProcessEnv): Config 
   const agent = obj(raw.agent, "agent");
   const routing = obj(raw.routing, "routing");
   const handoff = obj(raw.handoff, "handoff");
+  const verify = obj(raw.verify, "verify");
+  const verifyCommands = strList(verify.commands, [], "verify.commands").map((c) => c.trim()).filter(Boolean);
   const server = obj(raw.server, "server");
 
   const kind = str(tracker.kind, "github", env);
   if (kind !== "github" && kind !== "memory") throw new WorkflowError(`unsupported tracker.kind: ${kind}`);
 
-  const agents = buildAgents(obj(raw.agents, "agents"), env);
+  const agents = buildAgents(obj(raw.agents, "agents"), env, verifyCommands);
   const defaultRoute = strList(routing.default, Object.keys(agents).filter((k) => agents[k]!.enabled), "routing.default");
   for (const name of defaultRoute) {
     if (!agents[name]) throw new WorkflowError(`routing.default references unknown agent \`${name}\``);
@@ -171,12 +176,13 @@ function buildConfig(raw: Obj, baseDir: string, env: NodeJS.ProcessEnv): Config 
       openPullRequest: handoff.open_pull_request === undefined ? true : Boolean(handoff.open_pull_request),
       draft: Boolean(handoff.draft),
     },
+    verify: { commands: verifyCommands },
     server: { port },
     agents,
   };
 }
 
-function buildAgents(raw: Obj, env: NodeJS.ProcessEnv): Record<string, AgentConfig> {
+function buildAgents(raw: Obj, env: NodeJS.ProcessEnv, verifyCommands: string[]): Record<string, AgentConfig> {
   const out: Record<string, AgentConfig> = {};
   // Built-in agents are always defined; WORKFLOW.md can tune or disable them.
   const names = new Set<string>([...AGENT_KINDS, ...Object.keys(raw)]);
@@ -192,6 +198,13 @@ function buildAgents(raw: Obj, env: NodeJS.ProcessEnv): Record<string, AgentConf
       args: strList(a.args, DEFAULT_AGENT_ARGS[kind], `agents.${name}.args`),
       newArgs: strList(a.new_args, [], `agents.${name}.new_args`),
       resumeArgs: strList(a.resume_args, [], `agents.${name}.resume_args`),
+      // Verify commands are always allowed on top of the (overridable) base list.
+      allowedCommands: [
+        ...new Set([
+          ...strList(a.allowed_commands, DEFAULT_ALLOWED_COMMANDS, `agents.${name}.allowed_commands`),
+          ...verifyCommands,
+        ]),
+      ],
       maxConcurrent: int(a.max_concurrent, 2, `agents.${name}.max_concurrent`),
       enabled: a.enabled === undefined ? true : Boolean(a.enabled),
     };

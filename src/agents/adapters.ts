@@ -86,10 +86,14 @@ export const codexAdapter: AgentAdapter = {
 
 // ---------- claude: `claude -p --output-format stream-json --verbose [--resume id]` ----------
 
+export function claudeAllowedTools(commands: string[]): string[] {
+  return commands.length ? ["--allowedTools", ...commands.map((c) => `Bash(${c}:*)`)] : [];
+}
+
 export const claudeAdapter: AgentAdapter = {
   kind: "claude",
   argv(cfg, prompt, sessionId) {
-    const base = [cfg.command, "-p", "--output-format", "stream-json", "--verbose"];
+    const base = [cfg.command, "-p", "--output-format", "stream-json", "--verbose", ...claudeAllowedTools(cfg.allowedCommands)];
     return sessionId
       ? [...base, "--resume", sessionId, ...cfg.args, ...cfg.resumeArgs, "--", prompt]
       : [...base, ...cfg.args, ...cfg.newArgs, "--", prompt];

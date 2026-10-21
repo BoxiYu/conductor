@@ -23,6 +23,7 @@ const agent = (command: string, kind: AgentConfig["kind"] = "claude"): AgentConf
   args: [],
   newArgs: [],
   resumeArgs: [],
+  allowedCommands: [],
   maxConcurrent: 1,
   enabled: true,
 });

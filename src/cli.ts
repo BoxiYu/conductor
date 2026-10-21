@@ -16,7 +16,7 @@ const HELP = `conductor - turn GitHub issues into autonomous coding-agent runs
 Usage: conductor [WORKFLOW.md] [options]
 
 Options:
-  --once        Run a single poll tick, wait for started workers, then exit
+  --once        Run a single poll tick, wait for its workers and retries, then exit
   --check       Validate WORKFLOW.md and agent binaries, then exit
   --port <n>    Serve the status page on 127.0.0.1:<n> (overrides server.port)
   -h, --help    Show this help
@@ -67,7 +67,7 @@ async function main() {
 
   if (values.once) {
     await orch.tick();
-    await Promise.allSettled(orch.workerPromises.values());
+    await orch.drain();
     process.stdout.write(JSON.stringify(orch.snapshot(), null, 2) + "\n");
     await orch.stop();
     return;

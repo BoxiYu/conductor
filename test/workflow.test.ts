@@ -37,6 +37,16 @@ describe("workflow", () => {
     expect(validateForDispatch(parseWorkflow("", "/tmp/W.md").config)).toContain("tracker.repo must be set to owner/name");
   });
 
+  test("verify commands are allowed for every agent on top of the git defaults", () => {
+    const wf = parseWorkflow(
+      "---\nverify: {commands: [bun test, ' ']}\nagents:\n  agy: {allowed_commands: [make]}\n---\n",
+      "/tmp/W.md",
+    );
+    expect(wf.config.verify.commands).toEqual(["bun test"]);
+    expect(wf.config.agents.claude!.allowedCommands).toEqual(["git status", "git diff", "git log", "git add", "git commit", "bun test"]);
+    expect(wf.config.agents.agy!.allowedCommands).toEqual(["make", "bun test"]);
+  });
+
   test("custom agent entries reuse an adapter kind", () => {
     const wf = parseWorkflow("---\nagents:\n  claude-fast: {kind: claude, args: [--model, haiku]}\n---\n", "/tmp/W.md");
     expect(wf.config.agents["claude-fast"]!.kind).toBe("claude");

@@ -34,6 +34,11 @@ routing:
   default: [codex, claude, agy, grok]   # rotated; rate-limited agents are skipped for a while
   label_prefix: "agent:"                # label `agent:claude` pins an issue to claude
 
+verify:
+  # Commands the agent should run to check its work. They are listed in the prompt and
+  # auto-allowed for claude (other CLIs follow their own sandbox settings).
+  commands: ["bun test"]
+
 handoff:
   open_pull_request: true
   draft: false
@@ -48,6 +53,8 @@ agents:
     #        "-c", "sandbox_workspace_write.network_access=true", "-m", "gpt-5.5"]
   claude:
     max_concurrent: 2
+    # Commands claude may run without approval (prefix match). verify.commands are added on top.
+    # allowed_commands: ["git status", "git diff", "git log", "git add", "git commit"]
     # args: ["--permission-mode", "acceptEdits", "--model", "opus"]
   agy:
     max_concurrent: 1

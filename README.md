@@ -52,7 +52,7 @@ bun src/cli.ts                       # 常驻运行，状态页 http://127.0.0.1
 其他用法：
 
 ```bash
-bun src/cli.ts path/to/WORKFLOW.md --once   # 只轮询一次，等派出的任务跑完再退出
+bun src/cli.ts path/to/WORKFLOW.md --once   # 只轮询一次，等派出的任务（含重试）全部结束再退出
 bun run build                               # 编译成单文件 dist/conductor
 ```
 
@@ -91,11 +91,13 @@ routing:
 | Agent | 默认参数 |
 |---|---|
 | codex | `-c sandbox_mode="workspace-write" -c approval_policy="never"`（默认不联网） |
-| claude | `--permission-mode acceptEdits` |
+| claude | `--permission-mode acceptEdits`，外加放行 `git status/diff/log/add/commit` 和 `verify.commands` 里的命令 |
 | agy | `--sandbox --mode accept-edits` |
 | grok | 无（需要审批的工具会被拒绝） |
 
-保守参数下，agent 可能跑不了测试或装不了依赖。要完全无人值守，就得在 `agents.<name>.args` 里给更大的权限（如 codex 的 `--dangerously-bypass-approvals-and-sandbox`、claude 的 `--permission-mode bypassPermissions`、grok 的 `--always-approve`）。**这样做之前，务必把 Conductor 放进容器、虚拟机或专用用户里跑**，原因是：
+在 `verify.commands` 里写上项目的测试命令（如 `["bun test"]`）：这些命令会写进提示，并对 claude 自动放行。claude 的放行列表可以用 `agents.claude.allowed_commands` 覆盖，规则按前缀匹配，夹带其他命令的组合命令依然会被拒。`git push` 不在放行列表里，推送始终由 Conductor 完成。agent 提交不了也没关系，Conductor 交付前会把未提交的改动替它提交。
+
+保守参数下，agent 可能还是装不了依赖、跑不了别的命令。要完全无人值守，就得在 `agents.<name>.args` 里给更大的权限（如 codex 的 `--dangerously-bypass-approvals-and-sandbox`、claude 的 `--permission-mode bypassPermissions`、grok 的 `--always-approve`）。**这样做之前，务必把 Conductor 放进容器、虚拟机或专用用户里跑**，原因是：
 
 - issue 正文是外部输入，可能藏着诱导 agent 执行恶意命令的指令（prompt injection）。只给可信的人打 `conductor` 标签的权限。
 - Conductor 会剥掉 token 环境变量，但如果宿主的 git 凭证存在钥匙串里，agent 依然可以自己 `git push`。真正的隔离要靠容器或独立用户。

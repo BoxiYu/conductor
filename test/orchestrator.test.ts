@@ -50,6 +50,7 @@ workspace: {root: ${join(dir, "ws")}}
 hooks:
   after_create: ${afterCreate}
 ${agentLine}
+verify: {commands: [bun test]}
 ${extra}
 ---
 Fix {{ issue.title }} using {{ agent }}{% if attempt %} (attempt {{ attempt }}){% endif %}.`,
@@ -105,6 +106,9 @@ describe("orchestrator", () => {
     expect(calls[0]!.agent.kind).toBe("codex");
     expect(calls[0]!.prompt).toContain("Fix the login bug using codex.");
     expect(calls[0]!.prompt).toContain(".conductor/result.json");
+    expect(calls[0]!.prompt).toContain("Verify your work by running: `bun test`");
+    expect(calls[0]!.prompt).toContain("Conductor commits them for you");
+    expect(calls[0]!.agent.allowedCommands).toContain("bun test");
     expect(calls[0]!.sessionId).toBeNull();
     expect(calls[0]!.env.GITHUB_TOKEN).toBeUndefined();
 

@@ -4,7 +4,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runTurn } from "../src/agents/runner.ts";
+import { detectPermissionDenial, runTurn } from "../src/agents/runner.ts";
 import type { AgentConfig } from "../src/types.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "conductor-runner-"));
@@ -110,4 +110,25 @@ exit 0`,
   const r = await runTurn({ ...base, agent: agent(cli), prompt: "x", sessionId: null });
   expect(r.ok).toBe(true);
   expect(Date.now() - t0).toBeLessThan(4500);
+});
+
+test("detects headless permission denials from grok and agy", async () => {
+  expect(
+    detectPermissionDenial("permission required: Execute `gh issue view 5 && ls` was not run, as a headless run cannot ask for approval\n"),
+  ).toBe("Execute `gh issue view 5 && ls`");
+  expect(
+    detectPermissionDenial('jetski: no output produced \u2014 a tool required the "command" permission that headless mode cannot prompt for, so it was auto-denied.'),
+  ).toContain("shell command");
+  expect(detectPermissionDenial("some other warning")).toBeNull();
+
+  const cli = fakeCli(
+    "grok-cancel",
+    `echo '{"type":"end","stopReason":"cancelled","sessionId":"G7"}'
+echo 'permission required: Execute \`rm -rf x\` was not run, as a headless run cannot ask for approval' >&2`,
+  );
+  const r = await runTurn({ ...base, agent: agent(cli, "grok"), prompt: "x", sessionId: null });
+  expect(r.ok).toBe(false);
+  expect(r.sessionId).toBe("G7");
+  expect(r.permissionDenied).toBe("Execute `rm -rf x`");
+  expect(r.rateLimited).toBe(false);
 });

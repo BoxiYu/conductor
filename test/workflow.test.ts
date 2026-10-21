@@ -43,7 +43,10 @@ describe("workflow", () => {
       "/tmp/W.md",
     );
     expect(wf.config.verify.commands).toEqual(["bun test"]);
-    expect(wf.config.agents.claude!.allowedCommands).toEqual(["git status", "git diff", "git log", "git add", "git commit", "bun test"]);
+    expect(wf.config.agents.claude!.allowedCommands).toContain("git commit");
+    expect(wf.config.agents.claude!.allowedCommands).toContain("ls");
+    expect(wf.config.agents.claude!.allowedCommands).not.toContain("git push");
+    expect(wf.config.agents.claude!.allowedCommands.at(-1)).toBe("bun test");
     expect(wf.config.agents.agy!.allowedCommands).toEqual(["make", "bun test"]);
   });
 

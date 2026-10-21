@@ -43,8 +43,13 @@ Conductor protocol (always applies):
 - Until that file exists, Conductor will keep asking you to continue.`;
 }
 
-export function continuationPrompt(turn: number, maxTurns: number): string {
-  return `Continue working on the same task (turn ${turn} of ${maxTurns}). Pick up from the current state of the workspace. When finished, write ${REPORT_FILE} as described earlier; if blocked, write it with status "blocked".`;
+export function continuationPrompt(turn: number, maxTurns: number, denied: string | null = null, allowed: string[] = []): string {
+  const note = denied
+    ? `\n\nYour previous turn stopped because this was not permitted here: ${denied}. Do not retry it. ` +
+      (allowed.length ? `Shell commands you may run (one per call, no \`&&\`, \`;\` or pipes): ${allowed.map((c) => `\`${c}\``).join(", ")}. ` : "") +
+      `Use your file read/edit tools for everything else. Uncommitted changes are fine: Conductor commits them.`
+    : "";
+  return `Continue working on the same task (turn ${turn} of ${maxTurns}). Pick up from the current state of the workspace. When finished, write ${REPORT_FILE} as described earlier; if blocked, write it with status "blocked".${note}`;
 }
 
 /** Symphony backoff: 10s * 2^(attempt-1), capped. */
@@ -160,9 +165,10 @@ export class Orchestrator {
 
   /** Wait until nothing is running and no retry is queued (used by --once). */
   async drain() {
-    while (this.running.size > 0 || this.retries.size > 0) {
+    const busy = () => this.running.size > 0 || this.retries.size > 0 || this.firingRetries > 0;
+    while (busy()) {
       await Promise.allSettled(this.workerPromises.values());
-      if (this.running.size === 0 && this.retries.size > 0) await Bun.sleep(200);
+      if (this.running.size === 0 && busy()) await Bun.sleep(200);
     }
   }
 
@@ -353,6 +359,7 @@ export class Orchestrator {
       const feedback = pr || norm(issue.state) === "rework" ? await this.tracker.fetchFeedback(issue, pr).catch(() => "") : "";
       clearReport(ws.path);
       const env = agentEnv(config);
+      let denied: string | null = null;
 
       for (let turn = 1; turn <= config.agent.maxTurns; turn++) {
         entry.turn = turn;
@@ -364,7 +371,7 @@ export class Orchestrator {
                 agent,
                 feedback,
               })) + protocolFooter(config.verify.commands)
-            : continuationPrompt(turn, config.agent.maxTurns);
+            : continuationPrompt(turn, config.agent.maxTurns, denied, agentCfg.allowedCommands);
 
         const result = await this.runTurnImpl({
           agent: agentCfg,
@@ -384,6 +391,10 @@ export class Orchestrator {
           writeSession(ws.path, { agent, sessionId, updatedAt: new Date().toISOString() });
         }
         if (entry.stopReason) return { kind: "inactive" };
+        denied = result.permissionDenied;
+        if (denied) log("warn", "agent_permission_denied", { issue: issue.identifier, agent, turn, denied });
+        // A refused tool call ends some CLIs' turns (grok cancels); resume the session instead of failing.
+        if (!result.ok && denied && turn < config.agent.maxTurns) continue;
         if (!result.ok) {
           log("warn", "turn_failed", { issue: issue.identifier, agent, turn, reason: result.reason, error: result.error?.slice(0, 500) });
           return { kind: "failed", error: result.error ?? result.reason, rateLimited: result.rateLimited };
@@ -535,7 +546,19 @@ export class Orchestrator {
     log("info", "retry_scheduled", { issue: issue.identifier, attempt, delayMs, error: error.slice(0, 200) });
   }
 
+  /** Retries that left the queue but have not dispatched yet (awaiting the tracker). */
+  private firingRetries = 0;
+
   private async fireRetry(issueId: string) {
+    this.firingRetries++;
+    try {
+      await this.fireRetryInner(issueId);
+    } finally {
+      this.firingRetries--;
+    }
+  }
+
+  private async fireRetryInner(issueId: string) {
     const entry = this.retries.get(issueId);
     if (!entry || this.stopped) return;
     this.retries.delete(issueId);

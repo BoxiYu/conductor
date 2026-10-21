@@ -190,10 +190,15 @@ export const agyAdapter: AgentAdapter = {
 
 // ---------- grok: `grok -p <prompt> --output-format streaming-json [--resume id]` ----------
 
+/** grok uses Claude-compatible permission rules: one `--allow` per rule. */
+export function grokAllowRules(commands: string[]): string[] {
+  return commands.flatMap((c) => ["--allow", `Bash(${c}:*)`]);
+}
+
 export const grokAdapter: AgentAdapter = {
   kind: "grok",
   argv(cfg, prompt, sessionId) {
-    const base = [cfg.command, "--output-format", "streaming-json"];
+    const base = [cfg.command, "--output-format", "streaming-json", ...grokAllowRules(cfg.allowedCommands)];
     return sessionId
       ? [...base, "--resume", sessionId, ...cfg.args, ...cfg.resumeArgs, "-p", prompt]
       : [...base, ...cfg.args, ...cfg.newArgs, "-p", prompt];

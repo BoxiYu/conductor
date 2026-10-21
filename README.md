@@ -91,13 +91,19 @@ routing:
 | Agent | 默认参数 |
 |---|---|
 | codex | `-c sandbox_mode="workspace-write" -c approval_policy="never"`（默认不联网） |
-| claude | `--permission-mode acceptEdits`，外加放行 `git status/diff/log/add/commit` 和 `verify.commands` 里的命令 |
-| agy | `--sandbox --mode accept-edits` |
-| grok | 无（需要审批的工具会被拒绝） |
+| claude | `--permission-mode acceptEdits`，外加放行列表里的命令（见下） |
+| agy | `--sandbox --mode accept-edits`（能改文件，但无头模式下任何 shell 命令都会被拒） |
+| grok | `--permission-mode acceptEdits`，外加放行列表里的命令（实测无头模式下连写文件都会被拒，基本需要 `--yolo`） |
 
-在 `verify.commands` 里写上项目的测试命令（如 `["bun test"]`）：这些命令会写进提示，并对 claude 自动放行。claude 的放行列表可以用 `agents.claude.allowed_commands` 覆盖，规则按前缀匹配，夹带其他命令的组合命令依然会被拒。`git push` 不在放行列表里，推送始终由 Conductor 完成。agent 提交不了也没关系，Conductor 交付前会把未提交的改动替它提交。
+默认放行列表（claude 和 grok 会把它们转成 `Bash(<cmd>:*)` 规则）：`git status/diff/log/show/rev-parse/add/commit`，以及只读命令 `ls`、`cat`、`head`、`tail`、`wc`、`pwd`、`grep`，再加上 `verify.commands`。
 
-保守参数下，agent 可能还是装不了依赖、跑不了别的命令。要完全无人值守，就得在 `agents.<name>.args` 里给更大的权限（如 codex 的 `--dangerously-bypass-approvals-and-sandbox`、claude 的 `--permission-mode bypassPermissions`、grok 的 `--always-approve`）。**这样做之前，务必把 Conductor 放进容器、虚拟机或专用用户里跑**，原因是：
+在 `verify.commands` 里写上项目的测试命令（如 `["bun test"]`）：这些命令会写进提示，并对 claude 和 grok 自动放行。放行列表可以用 `agents.<name>.allowed_commands` 覆盖，规则按前缀匹配，夹带其他命令的组合命令依然会被拒。`git push` 不在放行列表里，推送始终由 Conductor 完成。agent 提交不了也没关系，Conductor 交付前会把未提交的改动替它提交。
+
+**被拒后续接：** grok 在无头模式下遇到没放行的操作，会直接取消整轮；agy 则会跳过那条命令。Conductor 从 stderr 识别出这种情况后，不算失败，而是续接同一个会话，告诉 agent 哪个操作不允许、哪些命令可以用。
+
+**agy 的命令权限：** 按 agy 自己的报错提示，需要在用户级 `~/.gemini/antigravity-cli/settings.json` 里加 `permissions.allow` 规则，写法如 `command(git status)`、`command(bun test)`（这一步未实测）。项目级的 `.agents/settings.json`、`.agents/hooks.json` 里返回 `allow` 的 hook、`--mode auto` 都已实测无效。Conductor 不会改你的用户配置；没有这些规则时，agy 只能改文件，不能自己跑测试和提交（提交由 Conductor 代为完成）。
+
+保守参数下，agent 可能还是装不了依赖、跑不了别的命令。要完全无人值守，就得在 `agents.<name>.args` 里给更大的权限（如 codex 的 `--dangerously-bypass-approvals-and-sandbox`、claude 的 `--permission-mode bypassPermissions`、grok 的 `--yolo`）。**这样做之前，务必把 Conductor 放进容器、虚拟机或专用用户里跑**，原因是：
 
 - issue 正文是外部输入，可能藏着诱导 agent 执行恶意命令的指令（prompt injection）。只给可信的人打 `conductor` 标签的权限。
 - Conductor 会剥掉 token 环境变量，但如果宿主的 git 凭证存在钥匙串里，agent 依然可以自己 `git push`。真正的隔离要靠容器或独立用户。

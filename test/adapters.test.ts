@@ -124,6 +124,15 @@ describe("grok adapter", () => {
     ]);
   });
 
+  test("allowed commands become --allow rules", () => {
+    const c = { ...cfg("grok", ["--permission-mode", "acceptEdits"]), allowedCommands: ["git commit", "bun test"] };
+    expect(ADAPTERS.grok.argv(c, "go", "G1")).toEqual([
+      "grok", "--output-format", "streaming-json",
+      "--allow", "Bash(git commit:*)", "--allow", "Bash(bun test:*)",
+      "--resume", "G1", "--permission-mode", "acceptEdits", "-p", "go",
+    ]);
+  });
+
   test("text + end", () => {
     const { st } = feed("grok", [
       { type: "available_commands", tools: ["read_file"] },

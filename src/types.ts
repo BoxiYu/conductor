@@ -30,8 +30,8 @@ export interface AgentConfig {
   resumeArgs: string[];
   /**
    * Shell commands the agent may run without approval, as prefixes (e.g. "git commit").
-   * Only the claude adapter turns these into permission rules (`--allowedTools "Bash(<cmd>:*)"`);
-   * other CLIs use their own sandbox settings in `args`.
+   * claude and grok get them as `Bash(<cmd>:*)` permission rules. agy only honors user-level
+   * settings, and codex relies on its sandbox, so neither uses this list.
    */
   allowedCommands: string[];
   maxConcurrent: number;
@@ -121,6 +121,8 @@ export interface TurnResult {
   error: string | null;
   /** Error looks like quota / rate limit / capacity, so another agent should be tried. */
   rateLimited: boolean;
+  /** The CLI refused a tool call it could not get approval for (headless). The session can continue. */
+  permissionDenied: string | null;
   exitCode: number | null;
   reason: "completed" | "failed" | "timeout" | "stalled" | "aborted";
 }

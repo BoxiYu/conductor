@@ -12,7 +12,23 @@ export class WorkflowError extends Error {}
 const AGENT_KINDS: AgentKind[] = ["codex", "claude", "agy", "grok"];
 
 /** Read-only and local-commit git commands. Push stays with Conductor. */
-export const DEFAULT_ALLOWED_COMMANDS = ["git status", "git diff", "git log", "git add", "git commit"];
+export const DEFAULT_ALLOWED_COMMANDS = [
+  "git status",
+  "git diff",
+  "git log",
+  "git show",
+  "git rev-parse",
+  "git add",
+  "git commit",
+  // read-only helpers agents reach for constantly
+  "ls",
+  "cat",
+  "head",
+  "tail",
+  "wc",
+  "pwd",
+  "grep",
+];
 
 /**
  * Default per-agent flags. They keep each CLI inside the workspace and auto-accept file edits,
@@ -23,7 +39,7 @@ const DEFAULT_AGENT_ARGS: Record<AgentKind, string[]> = {
   codex: ["--skip-git-repo-check", "-c", 'sandbox_mode="workspace-write"', "-c", 'approval_policy="never"'],
   claude: ["--permission-mode", "acceptEdits"],
   agy: ["--sandbox", "--mode", "accept-edits"],
-  grok: [],
+  grok: ["--permission-mode", "acceptEdits"],
 };
 
 export function splitFrontMatter(text: string): { front: string; body: string } {

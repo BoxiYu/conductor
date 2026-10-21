@@ -75,6 +75,7 @@ const ok = (sessionId: string, extra: Partial<TurnResult> = {}): TurnResult => (
   usage: { inputTokens: 10, outputTokens: 5 },
   error: null,
   rateLimited: false,
+  permissionDenied: null,
   exitCode: 0,
   reason: "completed",
   ...extra,
@@ -175,6 +176,25 @@ describe("orchestrator", () => {
     await orch.stop();
   });
 
+  test("a refused tool call resumes the same session with guidance instead of failing", async () => {
+    let turns = 0;
+    const { tracker, orch, calls } = setup("", async (o) => {
+      turns++;
+      if (turns === 1) {
+        return { ...ok("g-1"), ok: false, reason: "failed", error: "grok stopped: cancelled", permissionDenied: "Execute `gh issue view 5`" };
+      }
+      return doneTurn(o);
+    });
+    tracker.add({ number: 15, title: "denied once", labels: ["conductor", "agent:grok"] });
+    await orch.tick();
+    await waitFor(() => tracker.issues.get("15")!.state === "Human Review");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.sessionId).toBe("g-1");
+    expect(calls[1]!.prompt).toContain("not permitted here: Execute `gh issue view 5`");
+    expect(calls[1]!.prompt).toContain("`bun test`");
+    await orch.stop();
+  });
+
   test("gives up after max_attempts and marks the issue Blocked", async () => {
     const { tracker, orch, calls } = setup(
       "",
@@ -218,5 +238,30 @@ test("handoff works when origin/HEAD is missing", async () => {
   await orch.tick();
   await waitFor(() => tracker.issues.get("14")!.state === "Human Review");
   expect(tracker.prs.get("14")?.headBranch).toBe("conductor/14-no-origin-head");
+  await orch.stop();
+});
+
+test("drain waits for a retry that is in flight", async () => {
+  let turns = 0;
+  const { tracker, orch, calls } = setup(
+    "",
+    async (o) => {
+      turns++;
+      if (turns === 1) return { ...ok("r"), ok: false, error: "boom", reason: "failed" };
+      return doneTurn(o);
+    },
+    "agent: {max_turns: 1, max_attempts: 3, max_retry_backoff_ms: 1}",
+  );
+  // Slow tracker refresh: the retry has left the queue but not dispatched yet.
+  const fetchByIds = tracker.fetchByIds.bind(tracker);
+  tracker.fetchByIds = async (ids) => {
+    await Bun.sleep(300);
+    return fetchByIds(ids);
+  };
+  tracker.add({ number: 16, title: "retry once" });
+  await orch.tick();
+  await orch.drain();
+  expect(calls).toHaveLength(2);
+  expect(tracker.issues.get("16")!.state).toBe("Human Review");
   await orch.stop();
 });

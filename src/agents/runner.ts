@@ -128,6 +128,8 @@ export async function runTurn(opts: RunTurnOptions): Promise<TurnResult> {
   const stderrTail = stderrBuf.slice(-2000);
   if (reason) return fail(st, `turn ${reason}`, exitCode, reason);
 
+  const permissionDenied = detectPermissionDenial(stderrBuf);
+
   if (st.signal?.ok && exitCode === 0) {
     return {
       ok: true,
@@ -136,6 +138,7 @@ export async function runTurn(opts: RunTurnOptions): Promise<TurnResult> {
       usage: st.usage,
       error: null,
       rateLimited: false,
+      permissionDenied,
       exitCode,
       reason: "completed",
     };
@@ -146,8 +149,21 @@ export async function runTurn(opts: RunTurnOptions): Promise<TurnResult> {
     (st.signal?.ok ? `process exited with code ${exitCode}` : `no completion signal (exit ${exitCode})`) +
       (stderrTail ? `: ${stderrTail.slice(-500)}` : "");
   const result = fail(st, error, exitCode, "failed");
-  result.rateLimited = Boolean(rateLimitHint) || looksRateLimited(error);
+  result.permissionDenied = permissionDenied;
+  result.rateLimited = !permissionDenied && (Boolean(rateLimitHint) || looksRateLimited(error));
   return result;
+}
+
+/**
+ * Headless CLIs report tool calls they could not get approval for on stderr.
+ * grok: "permission required: Execute `cmd` was not run, as a headless run cannot ask for approval"
+ * agy:  "... a tool required the \"command\" permission that headless mode cannot prompt for, so it was auto-denied."
+ */
+export function detectPermissionDenial(stderr: string): string | null {
+  const grok = [...stderr.matchAll(/permission required: (.+?) was not run/g)].map((m) => m[1]!.trim());
+  if (grok.length) return grok.slice(-3).join("; ").slice(0, 600);
+  if (/headless mode cannot prompt for, so it was auto-denied/.test(stderr)) return "a shell command (not on the allowed list)";
+  return null;
 }
 
 function fail(st: ReturnType<typeof newParseState>, error: string, exitCode: number | null, reason: TurnResult["reason"]): TurnResult {
@@ -158,6 +174,7 @@ function fail(st: ReturnType<typeof newParseState>, error: string, exitCode: num
     usage: st.usage,
     error,
     rateLimited: looksRateLimited(error),
+    permissionDenied: null,
     exitCode,
     reason,
   };

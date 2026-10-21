@@ -60,6 +60,9 @@ agents:
     max_concurrent: 1
   grok:
     max_concurrent: 1
+    # Headless grok refuses even file writes under acceptEdits. --yolo auto-approves everything:
+    # only use it when Conductor runs in a container / VM / dedicated user.
+    # args: ["--yolo"]
     # enabled: false
 ---
 

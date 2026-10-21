@@ -1,0 +1,24 @@
+{
+  "name": "conductor",
+  "version": "0.1.0",
+  "description": "Turn GitHub issues into isolated, autonomous coding-agent runs across Codex, Claude, Grok and Antigravity.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "bin": {
+    "conductor": "src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun src/cli.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/cli.ts --compile --outfile dist/conductor"
+  },
+  "dependencies": {
+    "liquidjs": "^10.30.0",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "typescript": "^7.0.2"
+  }
+}

@@ -68,7 +68,7 @@ export async function runHook(name: string, script: string, cwd: string, timeout
 }
 
 export async function git(cwd: string, args: string[], env?: Record<string, string>): Promise<{ code: number; out: string }> {
-  const proc = Bun.spawn(["git", ...args], { cwd, env, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  const proc = Bun.spawn(["git", ...args], { cwd, env: env ?? (process.env as Record<string, string>), stdout: "pipe", stderr: "pipe", stdin: "ignore" });
   const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   return { code, out: (stdout + stderr).trim() };
 }
@@ -113,8 +113,10 @@ export async function prepareWorkspace(config: Config, issue: Issue): Promise<Pr
     }
     const basePath = join(path, STATE_DIR, "base");
     if (!existsSync(basePath)) {
-      const base = (await git(path, ["merge-base", "HEAD", "origin/HEAD"])).out || (await git(path, ["rev-parse", "HEAD"])).out;
-      writeFileSync(basePath, base.split("\n")[0] ?? "");
+      const mb = await git(path, ["merge-base", "HEAD", "origin/HEAD"]);
+      const head = mb.code === 0 ? mb : await git(path, ["rev-parse", "HEAD"]);
+      // An empty base (fresh repo without commits) means "count every commit".
+      writeFileSync(basePath, head.code === 0 ? (head.out.split("\n")[0] ?? "") : "");
     }
   }
 
@@ -189,14 +191,15 @@ export async function finalizeCommits(path: string, issue: Issue): Promise<{ ahe
   const status = await git(path, ["status", "--porcelain"]);
   if (status.out) {
     await git(path, ["add", "-A"]);
-    await git(path, ["commit", "-m", `conductor: changes for #${issue.number}`, "--no-verify"]);
+    const c = await git(path, ["commit", "-m", `conductor: changes for #${issue.number}`, "--no-verify"]);
+    if (c.code !== 0) throw new Error(`git commit failed: ${c.out.slice(-500)}`);
   }
   let base = "";
   try {
     base = readFileSync(join(path, STATE_DIR, "base"), "utf8").trim();
   } catch {}
-  if (!base) return { ahead: 0 };
-  const count = await git(path, ["rev-list", "--count", `${base}..HEAD`]);
+  const count = await git(path, ["rev-list", "--count", base ? `${base}..HEAD` : "HEAD"]);
+  if (count.code !== 0) throw new Error(`cannot count commits: ${count.out.slice(-300)}`);
   return { ahead: Number(count.out) || 0 };
 }
 

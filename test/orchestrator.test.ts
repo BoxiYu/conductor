@@ -37,6 +37,7 @@ function setup(
   extra = "",
   runTurn?: (o: RunTurnOptions) => Promise<TurnResult>,
   agentLine = "agent: {max_turns: 3, max_attempts: 3, rate_limit_cooldown_ms: 60000}",
+  afterCreate = `git clone -q ${origin} .`,
 ) {
   const dir = join(root, `case-${++n}`);
   mkdirSync(dir);
@@ -47,7 +48,7 @@ function setup(
 tracker: {kind: memory, repo: me/demo}
 workspace: {root: ${join(dir, "ws")}}
 hooks:
-  after_create: git clone -q ${origin} .
+  after_create: ${afterCreate}
 ${agentLine}
 ${extra}
 ---
@@ -205,4 +206,13 @@ describe("orchestrator", () => {
     expect(calls).toHaveLength(0);
     await orch.stop();
   });
+});
+
+test("handoff works when origin/HEAD is missing", async () => {
+  const { tracker, orch } = setup("", undefined, undefined, `git clone -q ${origin} . && git remote set-head origin -d`);
+  tracker.add({ number: 14, title: "no origin head" });
+  await orch.tick();
+  await waitFor(() => tracker.issues.get("14")!.state === "Human Review");
+  expect(tracker.prs.get("14")?.headBranch).toBe("conductor/14-no-origin-head");
+  await orch.stop();
 });

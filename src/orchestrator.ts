@@ -7,6 +7,7 @@ import type { AgentEvent, Config, Issue, TurnResult, Usage, Workflow } from "./t
 import type { PullRequestRef, Tracker } from "./tracker/tracker.ts";
 import { norm } from "./tracker/tracker.ts";
 import { Router } from "./router.ts";
+import { applySandbox, sandboxEnv } from "./sandbox.ts";
 import { runTurn as defaultRunTurn, type RunTurnOptions } from "./agents/runner.ts";
 import { loadWorkflow, renderPrompt, validateForDispatch } from "./workflow.ts";
 import {
@@ -358,11 +359,13 @@ export class Orchestrator {
       const pr = ws.isGit ? await this.tracker.findPullRequest(issue, ws.branch).catch(() => null) : null;
       const feedback = pr || norm(issue.state) === "rework" ? await this.tracker.fetchFeedback(issue, pr).catch(() => "") : "";
       clearReport(ws.path);
-      const env = agentEnv(config);
+      const env = { ...agentEnv(config), ...sandboxEnv(config, ws.path) };
       let denied: string | null = null;
 
       for (let turn = 1; turn <= config.agent.maxTurns; turn++) {
         entry.turn = turn;
+        // Recomputed every turn so per-workspace sandbox files are rewritten before launch.
+        const turnAgent = applySandbox(agentCfg, config, ws.path);
         const prompt =
           turn === 1
             ? (await renderPrompt(this.workflow.promptTemplate, {
@@ -371,10 +374,10 @@ export class Orchestrator {
                 agent,
                 feedback,
               })) + protocolFooter(config.verify.commands)
-            : continuationPrompt(turn, config.agent.maxTurns, denied, agentCfg.allowedCommands);
+            : continuationPrompt(turn, config.agent.maxTurns, denied, turnAgent.allowedCommands);
 
         const result = await this.runTurnImpl({
-          agent: agentCfg,
+          agent: turnAgent,
           prompt,
           sessionId,
           cwd: ws.path,

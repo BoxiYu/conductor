@@ -86,28 +86,38 @@ routing:
 
 ## 信任与安全（务必读）
 
-默认参数比较保守，各家只自动接受工作区内的文件修改：
+### 默认：各家自带的沙箱（`sandbox.mode: native`）
 
-| Agent | 默认参数 |
-|---|---|
-| codex | `-c sandbox_mode="workspace-write" -c approval_policy="never"`（默认不联网） |
-| claude | `--permission-mode acceptEdits`，外加放行列表里的命令（见下） |
-| agy | `--sandbox --mode accept-edits`（能改文件，但无头模式下任何 shell 命令都会被拒） |
-| grok | `--permission-mode acceptEdits`，外加放行列表里的命令（实测无头模式下连写文件都会被拒，基本需要 `--yolo`） |
+和 Symphony 给 Codex 的配置思路一样：开启每个 CLI 自带的系统级沙箱（macOS 上是 Seatbelt，Linux 上是 Landlock / bubblewrap），沙箱允许的操作一律自动批准。在此基础上，Conductor 还加了一层**禁止读取**，让 agent 读不到凭证文件。
 
-默认放行列表（claude 和 grok 会把它们转成 `Bash(<cmd>:*)` 规则）：`git status/diff/log/show/rev-parse/add/commit`，以及只读命令 `ls`、`cat`、`head`、`tail`、`wc`、`pwd`、`grep`，再加上 `verify.commands`。
+| Agent | Conductor 加的参数 | 跑命令 | 写工作区外 | 读凭证 | 自己提交 |
+|---|---|---|---|---|---|
+| codex | 自定义权限配置（全盘只读，工作区和临时目录可写，禁止读取的路径设为 `none`），加 `approval_policy="never"` | ✅ | 🚫 | 🚫 | ❌ `.git` 是只读的，由 Conductor 代为提交 |
+| claude | `--permission-mode acceptEdits` 加 `--settings`：开启沙箱、沙箱内命令自动放行、禁止跳出沙箱；它自己的读写文件工具另用 `Read`/`Edit` 禁止规则挡住 | ✅ | 🚫 | 🚫 | ✅ |
+| grok | 每轮开始前往工作区写入 `.grok/sandbox.toml`（基于 `workspace` 配置，加上 `deny` 列表），加 `--sandbox conductor --always-approve` | ✅ | 🚫 | 🚫 | ✅ |
+| agy | `--sandbox --mode accept-edits` | ❌ 所有命令都会被拒 | 🚫 | 🚫 | ❌ 由 Conductor 代为提交 |
 
-在 `verify.commands` 里写上项目的测试命令（如 `["bun test"]`）：这些命令会写进提示，并对 claude 和 grok 自动放行。放行列表可以用 `agents.<name>.allowed_commands` 覆盖，规则按前缀匹配，夹带其他命令的组合命令依然会被拒。`git push` 不在放行列表里，推送始终由 Conductor 完成。agent 提交不了也没关系，Conductor 交付前会把未提交的改动替它提交。
+上表是在 macOS 上用 Conductor 实际生成的参数测出来的：让 agent 往工作区外写文件，再去读一个放在工作区外的假密钥，然后直接看文件系统和输出结果，不听 agent 自己怎么汇报。
 
-**被拒后续接：** grok 在无头模式下遇到没放行的操作，会直接取消整轮；agy 则会跳过那条命令。Conductor 从 stderr 识别出这种情况后，不算失败，而是续接同一个会话，告诉 agent 哪个操作不允许、哪些命令可以用。
+- **禁止读取的路径：** 默认是 `~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.config/gh`、`~/.docker`、`~/.kube`、`~/.netrc`、`~/.git-credentials`、`~/.npmrc`，另外每个 agent 都读不到**别家** CLI 的目录（比如 grok 读不到 `~/.codex`）。不存在的路径会自动跳过。可以用 `sandbox.deny_read` 覆盖。
+- **网络：** `sandbox.network: true` 时，codex 和 grok 都可以直接联网。claude 的沙箱网络要走代理，只放行 `sandbox.allowed_domains` 里的域名，没填就用内置的常见包仓库列表（npm、GitHub、PyPI、crates.io、Go 代理）；`curl` 这类命令在 claude 里仍会被要求审批，会被拒绝。
+- **包缓存：** 沙箱不让写 `~/.npm` 这类全局缓存；如果放开，agent 就可能往缓存里塞恶意包，影响你本机的构建。所以 Conductor 把 npm、bun、yarn、pnpm、pip、uv、Go 的缓存目录都指到工作区里的 `.conductor/cache/`。装依赖能用，只是不共享缓存，会慢一些。
+- **agy 是例外：** 它的 `--sandbox` 只限制 shell 命令，管不到它自带的读写文件工具。实测在 `--sandbox --dangerously-skip-permissions` 下，它能写工作区外的文件，也能读到凭证，所以这里不提供自动批准。它在本地只能改代码、不能跑测试；需要它跑测试的话，就放进 Docker 里用 `sandbox.mode: none` 跑。
+- **推送：** `git push` 始终由 Conductor 在宿主上完成。agent 子进程里没有 `GITHUB_TOKEN` / `GH_TOKEN`，`~/.config/gh` 也读不到。
 
-**agy 的命令权限：** 按 agy 自己的报错提示，需要在用户级 `~/.gemini/antigravity-cli/settings.json` 里加 `permissions.allow` 规则，写法如 `command(git status)`、`command(bun test)`（这一步未实测）。项目级的 `.agents/settings.json`、`.agents/hooks.json` 里返回 `allow` 的 hook、`--mode auto` 都已实测无效。Conductor 不会改你的用户配置；没有这些规则时，agy 只能改文件，不能自己跑测试和提交（提交由 Conductor 代为完成）。另一种做法是 `--sandbox --dangerously-skip-permissions`：实测 agy 能自己跑测试，但沙箱里仍不能 `git commit`，提交照样由 Conductor 完成。
-
-保守参数下，agent 可能还是装不了依赖、跑不了别的命令。要完全无人值守，就得在 `agents.<name>.args` 里给更大的权限（如 codex 的 `--dangerously-bypass-approvals-and-sandbox`、claude 的 `--permission-mode bypassPermissions`、grok 的 `--yolo`、agy 的 `--dangerously-skip-permissions`）。**这样做之前，务必把 Conductor 放进容器、虚拟机或专用用户里跑**，原因是：
-
+**还挡不住的：**
+- 读取只禁止了上面这些路径，你项目以外的其他代码目录 agent 依然能读到。
+- 网络开着时，agent 理论上可以把它读得到的东西发出去。
 - issue 正文是外部输入，可能藏着诱导 agent 执行恶意命令的指令（prompt injection）。只给可信的人打 `conductor` 标签的权限。
-- Conductor 会剥掉 token 环境变量，但如果宿主的 git 凭证存在钥匙串里，agent 依然可以自己 `git push`。真正的隔离要靠容器或独立用户。
-- hooks 是可信配置，以完整环境变量执行。
+- hooks 是可信配置，用完整的环境变量执行，不进沙箱。
+
+### 完全放开：Docker（`sandbox.mode: none`）
+
+`mode: none` 时，Conductor 不加任何权限参数，全由 `agents.<name>.args` 决定，比如 codex 的 `--dangerously-bypass-approvals-and-sandbox`、claude 的 `--permission-mode bypassPermissions`、grok 的 `--yolo`、agy 的 `--dangerously-skip-permissions`。**只能在容器、虚拟机或专用用户里这样跑。** 容器镜像见 `docker/agent.Dockerfile`；Conductor 和容器的对接还在做（见路线图）。
+
+`mode: none` 下还有两个机制会生效：
+- **命令放行列表：** claude 和 grok 会把 `agents.<name>.allowed_commands`（默认是只读的 git 命令加 `git add/commit`）和 `verify.commands` 转成 `Bash(<cmd>:*)` 规则。
+- **被拒后续接：** grok 在无头模式下遇到没放行的操作，会直接取消整轮；agy 会跳过那条命令。Conductor 从 stderr 识别出这种情况后，不算失败，而是续接同一个会话，告诉 agent 哪个操作不允许、哪些命令可以用。
 
 ## 开发
 
@@ -125,6 +135,8 @@ src/router.ts         选 agent：标签指定 > 续用上次 > 轮转；限流�
 src/agents/           runner（子进程/超时/卡死检测）+ 四家输出解析
 src/tracker/          GitHub Issues 适配器、内存适配器
 src/workspace.ts      工作区、hooks、git 分支与推送
+src/sandbox.ts        自带沙箱模式：每家的沙箱参数、禁止读取列表、工作区内包缓存
+docker/               完全放开权限时用的 agent 镜像
 src/workflow.ts       WORKFLOW.md 解析与 prompt 渲染
 src/server.ts         状态页与 JSON 接口
 ```
@@ -133,7 +145,8 @@ src/server.ts         状态页与 JSON 接口
 
 - [ ] 交叉审查：PR 开出后，换一家 agent 审代码，有问题自动打回 Rework
 - [ ] 看板 MCP server：让 agent 在宿主端读写 issue，不碰 token
-- [ ] 每单跑在容器里（Docker / OrbStack）；按 Symphony 附录 A 支持 SSH 远程 worker
+- [x] 默认用各 CLI 自带的系统级沙箱，并禁止读取凭证路径
+- [ ] 每单跑在容器里（Docker / OrbStack）：镜像已就绪（`docker/agent.Dockerfile`），对接还没做；按 Symphony 附录 A 支持 SSH 远程 worker
 - [ ] codex 改用 `app-server` 长连接
 - [ ] 按 agent 统计合并率、返工率和 token 成本，据此调整路由
 

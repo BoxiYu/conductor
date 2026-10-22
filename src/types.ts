@@ -87,6 +87,21 @@ export interface Config {
     openPullRequest: boolean;
     draft: boolean;
   };
+  sandbox: {
+    /**
+     * native: each CLI's own OS sandbox, auto-approving what it allows (default).
+     * none: no flags added; `agents.<name>.args` decide everything (e.g. inside Docker).
+     */
+    mode: "native" | "none";
+    /** Allow network for commands the agent runs. */
+    network: boolean;
+    /** Hosts claude's sandbox proxy lets through when network is on (empty = built-in list). */
+    allowedDomains: string[];
+    /** Paths agents may not read (or write). Other vendors' CLI homes are always added. */
+    denyRead: string[];
+    /** Extra writable paths besides the workspace and temp dirs (e.g. a package cache). */
+    allowWrite: string[];
+  };
   /** Commands the agent should run to verify its work, e.g. ["bun test"]. */
   verify: { commands: string[] };
   server: { port: number | null };

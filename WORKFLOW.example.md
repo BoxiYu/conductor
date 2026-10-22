@@ -34,9 +34,19 @@ routing:
   default: [codex, claude, agy, grok]   # rotated; rate-limited agents are skipped for a while
   label_prefix: "agent:"                # label `agent:claude` pins an issue to claude
 
+sandbox:
+  # native: each CLI runs in its own OS sandbox (Seatbelt / Landlock) and auto-approves what
+  #         the sandbox allows: read anywhere except deny_read, write only the workspace + tmp.
+  # none:   Conductor adds no permission flags; agents.<name>.args decide (e.g. in Docker).
+  mode: native
+  network: true                 # commands may use the network (claude: allowed_domains only)
+  # allowed_domains: ["registry.npmjs.org", "github.com"]   # claude; empty = built-in list
+  # deny_read: ["~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gh", "~/.docker", "~/.kube",
+  #             "~/.netrc", "~/.git-credentials", "~/.npmrc"]   # default; other agents' homes are added
+  # allow_write: []             # extra writable paths; package caches already live in the workspace
+
 verify:
-  # Commands the agent should run to check its work. They are listed in the prompt and
-  # auto-allowed for claude (other CLIs follow their own sandbox settings).
+  # Commands the agent should run to check its work. They are listed in the prompt.
   commands: ["bun test"]
 
 handoff:
@@ -47,26 +57,20 @@ server:
   port: 4141
 
 agents:
+  # args are appended after the sandbox flags, e.g. a model choice.
   codex:
     max_concurrent: 2
-    # args: ["--skip-git-repo-check", "-c", 'sandbox_mode="workspace-write"', "-c", 'approval_policy="never"',
-    #        "-c", "sandbox_workspace_write.network_access=true", "-m", "gpt-5.5"]
+    # args: ["--skip-git-repo-check", "-m", "gpt-6-sol"]
   claude:
     max_concurrent: 2
-    # Commands claude may run without approval (prefix match). verify.commands are added on top.
-    # allowed_commands: ["git status", "git diff", "git log", "git add", "git commit"]
-    # args: ["--permission-mode", "acceptEdits", "--model", "opus"]
+    # args: ["--model", "opus"]
   agy:
     max_concurrent: 1
-    # Headless agy refuses every shell command by default (tests included). This auto-approves
-    # everything: only use it when Conductor runs in a container / VM / dedicated user.
-    # With --sandbox kept, agy runs tests but cannot `git commit`; Conductor commits for it.
-    # args: ["--sandbox", "--dangerously-skip-permissions"]
+    # In native mode agy can edit files in the workspace but every shell command is refused:
+    # its --sandbox does not cover its own file tools, so auto-approving would let it read and
+    # write anywhere. Conductor commits for it. For tests, run agy with sandbox.mode: none in Docker.
   grok:
     max_concurrent: 1
-    # Headless grok refuses even file writes under acceptEdits. --yolo auto-approves everything:
-    # only use it when Conductor runs in a container / VM / dedicated user.
-    # args: ["--yolo"]
     # enabled: false
 ---
 

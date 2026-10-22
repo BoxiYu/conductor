@@ -109,7 +109,10 @@ describe("orchestrator", () => {
     expect(calls[0]!.prompt).toContain(".conductor/result.json");
     expect(calls[0]!.prompt).toContain("Verify your work by running: `bun test`");
     expect(calls[0]!.prompt).toContain("Conductor commits them for you");
-    expect(calls[0]!.agent.allowedCommands).toContain("bun test");
+    // Native sandbox mode (default): codex gets its permission profile, no allow-list needed.
+    expect(calls[0]!.agent.args).toContain('default_permissions="conductor"');
+    expect(calls[0]!.agent.args.join(" ")).toContain('":workspace_roots"="write"');
+    expect(calls[0]!.agent.allowedCommands).toEqual([]);
     expect(calls[0]!.sessionId).toBeNull();
     expect(calls[0]!.env.GITHUB_TOKEN).toBeUndefined();
 
@@ -178,7 +181,7 @@ describe("orchestrator", () => {
 
   test("a refused tool call resumes the same session with guidance instead of failing", async () => {
     let turns = 0;
-    const { tracker, orch, calls } = setup("", async (o) => {
+    const { tracker, orch, calls } = setup("sandbox: {mode: none}", async (o) => {
       turns++;
       if (turns === 1) {
         return { ...ok("g-1"), ok: false, reason: "failed", error: "grok stopped: cancelled", permissionDenied: "Execute `gh issue view 5`" };

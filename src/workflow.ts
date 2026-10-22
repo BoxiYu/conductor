@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Liquid } from "liquidjs";
 import YAML from "yaml";
 import type { AgentConfig, AgentKind, Config, Workflow } from "./types.ts";
+import { DEFAULT_DENY_READ } from "./sandbox.ts";
 
 export class WorkflowError extends Error {}
 
@@ -31,10 +32,17 @@ export const DEFAULT_ALLOWED_COMMANDS = [
 ];
 
 /**
- * Default per-agent flags. They keep each CLI inside the workspace and auto-accept file edits,
- * but do not hand out unrestricted shell access. For fully unattended runs inside a container
- * or VM, override `args` in WORKFLOW.md (see README "Trust posture").
+ * Default per-agent flags for `sandbox.mode: none`. They keep each CLI inside the workspace and
+ * auto-accept file edits, but do not hand out unrestricted shell access. In native mode the
+ * sandbox module adds the permission flags (see src/sandbox.ts), so only these remain.
  */
+const NATIVE_AGENT_ARGS: Record<AgentKind, string[]> = {
+  codex: ["--skip-git-repo-check"],
+  claude: [],
+  agy: [],
+  grok: [],
+};
+
 const DEFAULT_AGENT_ARGS: Record<AgentKind, string[]> = {
   codex: ["--skip-git-repo-check", "-c", 'sandbox_mode="workspace-write"', "-c", 'approval_policy="never"'],
   claude: ["--permission-mode", "acceptEdits"],
@@ -135,13 +143,18 @@ function buildConfig(raw: Obj, baseDir: string, env: NodeJS.ProcessEnv): Config 
   const routing = obj(raw.routing, "routing");
   const handoff = obj(raw.handoff, "handoff");
   const verify = obj(raw.verify, "verify");
+  const sandbox = obj(raw.sandbox, "sandbox");
+  const sandboxMode = str(sandbox.mode, "native", env);
+  if (sandboxMode !== "native" && sandboxMode !== "none") {
+    throw new WorkflowError(`sandbox.mode must be native or none (got ${sandboxMode})`);
+  }
   const verifyCommands = strList(verify.commands, [], "verify.commands").map((c) => c.trim()).filter(Boolean);
   const server = obj(raw.server, "server");
 
   const kind = str(tracker.kind, "github", env);
   if (kind !== "github" && kind !== "memory") throw new WorkflowError(`unsupported tracker.kind: ${kind}`);
 
-  const agents = buildAgents(obj(raw.agents, "agents"), env, verifyCommands);
+  const agents = buildAgents(obj(raw.agents, "agents"), env, verifyCommands, sandboxMode === "native" ? NATIVE_AGENT_ARGS : DEFAULT_AGENT_ARGS);
   const defaultRoute = strList(routing.default, Object.keys(agents).filter((k) => agents[k]!.enabled), "routing.default");
   for (const name of defaultRoute) {
     if (!agents[name]) throw new WorkflowError(`routing.default references unknown agent \`${name}\``);
@@ -192,13 +205,25 @@ function buildConfig(raw: Obj, baseDir: string, env: NodeJS.ProcessEnv): Config 
       openPullRequest: handoff.open_pull_request === undefined ? true : Boolean(handoff.open_pull_request),
       draft: Boolean(handoff.draft),
     },
+    sandbox: {
+      mode: sandboxMode,
+      network: sandbox.network === undefined ? true : Boolean(sandbox.network),
+      allowedDomains: strList(sandbox.allowed_domains, [], "sandbox.allowed_domains"),
+      denyRead: strList(sandbox.deny_read, DEFAULT_DENY_READ, "sandbox.deny_read"),
+      allowWrite: strList(sandbox.allow_write, [], "sandbox.allow_write"),
+    },
     verify: { commands: verifyCommands },
     server: { port },
     agents,
   };
 }
 
-function buildAgents(raw: Obj, env: NodeJS.ProcessEnv, verifyCommands: string[]): Record<string, AgentConfig> {
+function buildAgents(
+  raw: Obj,
+  env: NodeJS.ProcessEnv,
+  verifyCommands: string[],
+  defaultArgs: Record<AgentKind, string[]>,
+): Record<string, AgentConfig> {
   const out: Record<string, AgentConfig> = {};
   // Built-in agents are always defined; WORKFLOW.md can tune or disable them.
   const names = new Set<string>([...AGENT_KINDS, ...Object.keys(raw)]);
@@ -211,7 +236,7 @@ function buildAgents(raw: Obj, env: NodeJS.ProcessEnv, verifyCommands: string[])
     out[name] = {
       kind,
       command: str(a.command, kind, env),
-      args: strList(a.args, DEFAULT_AGENT_ARGS[kind], `agents.${name}.args`),
+      args: strList(a.args, defaultArgs[kind], `agents.${name}.args`),
       newArgs: strList(a.new_args, [], `agents.${name}.new_args`),
       resumeArgs: strList(a.resume_args, [], `agents.${name}.resume_args`),
       // Verify commands are always allowed on top of the (overridable) base list.

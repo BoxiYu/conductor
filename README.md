@@ -101,9 +101,9 @@ routing:
 
 **被拒后续接：** grok 在无头模式下遇到没放行的操作，会直接取消整轮；agy 则会跳过那条命令。Conductor 从 stderr 识别出这种情况后，不算失败，而是续接同一个会话，告诉 agent 哪个操作不允许、哪些命令可以用。
 
-**agy 的命令权限：** 按 agy 自己的报错提示，需要在用户级 `~/.gemini/antigravity-cli/settings.json` 里加 `permissions.allow` 规则，写法如 `command(git status)`、`command(bun test)`（这一步未实测）。项目级的 `.agents/settings.json`、`.agents/hooks.json` 里返回 `allow` 的 hook、`--mode auto` 都已实测无效。Conductor 不会改你的用户配置；没有这些规则时，agy 只能改文件，不能自己跑测试和提交（提交由 Conductor 代为完成）。
+**agy 的命令权限：** 按 agy 自己的报错提示，需要在用户级 `~/.gemini/antigravity-cli/settings.json` 里加 `permissions.allow` 规则，写法如 `command(git status)`、`command(bun test)`（这一步未实测）。项目级的 `.agents/settings.json`、`.agents/hooks.json` 里返回 `allow` 的 hook、`--mode auto` 都已实测无效。Conductor 不会改你的用户配置；没有这些规则时，agy 只能改文件，不能自己跑测试和提交（提交由 Conductor 代为完成）。另一种做法是 `--sandbox --dangerously-skip-permissions`：实测 agy 能自己跑测试，但沙箱里仍不能 `git commit`，提交照样由 Conductor 完成。
 
-保守参数下，agent 可能还是装不了依赖、跑不了别的命令。要完全无人值守，就得在 `agents.<name>.args` 里给更大的权限（如 codex 的 `--dangerously-bypass-approvals-and-sandbox`、claude 的 `--permission-mode bypassPermissions`、grok 的 `--yolo`）。**这样做之前，务必把 Conductor 放进容器、虚拟机或专用用户里跑**，原因是：
+保守参数下，agent 可能还是装不了依赖、跑不了别的命令。要完全无人值守，就得在 `agents.<name>.args` 里给更大的权限（如 codex 的 `--dangerously-bypass-approvals-and-sandbox`、claude 的 `--permission-mode bypassPermissions`、grok 的 `--yolo`、agy 的 `--dangerously-skip-permissions`）。**这样做之前，务必把 Conductor 放进容器、虚拟机或专用用户里跑**，原因是：
 
 - issue 正文是外部输入，可能藏着诱导 agent 执行恶意命令的指令（prompt injection）。只给可信的人打 `conductor` 标签的权限。
 - Conductor 会剥掉 token 环境变量，但如果宿主的 git 凭证存在钥匙串里，agent 依然可以自己 `git push`。真正的隔离要靠容器或独立用户。

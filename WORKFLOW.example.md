@@ -58,6 +58,10 @@ agents:
     # args: ["--permission-mode", "acceptEdits", "--model", "opus"]
   agy:
     max_concurrent: 1
+    # Headless agy refuses every shell command by default (tests included). This auto-approves
+    # everything: only use it when Conductor runs in a container / VM / dedicated user.
+    # With --sandbox kept, agy runs tests but cannot `git commit`; Conductor commits for it.
+    # args: ["--sandbox", "--dangerously-skip-permissions"]
   grok:
     max_concurrent: 1
     # Headless grok refuses even file writes under acceptEdits. --yolo auto-approves everything:

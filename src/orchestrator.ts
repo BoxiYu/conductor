@@ -29,6 +29,7 @@ import {
   writeSession,
 } from "./workspace.ts";
 import { log } from "./log.ts";
+import { Telemetry } from "./telemetry.ts";
 
 export { MARKER };
 
@@ -93,6 +94,11 @@ interface RunEntry {
   lastText: string;
   abort: AbortController;
   stopReason: "terminal" | "inactive" | "shutdown" | null;
+  phase: "preparing" | "running" | "handing off";
+  branch: string | null;
+  prUrl: string | null;
+  lastTool: { name: string; detail: string | null; at: number } | null;
+  toolCalls: number;
 }
 
 interface RetryEntry {
@@ -121,6 +127,8 @@ export class Orchestrator {
   workflow: Workflow;
   private workflowMtime = 0;
   readonly router: Router;
+  readonly telemetry: Telemetry;
+  private readonly bootedAt: number;
   readonly running = new Map<string, RunEntry>();
   readonly claimed = new Set<string>();
   readonly retries = new Map<string, RetryEntry>();
@@ -140,6 +148,8 @@ export class Orchestrator {
     this.runTurnImpl = deps.runTurn ?? defaultRunTurn;
     this.now = deps.now ?? Date.now;
     this.router = new Router(workflow.config);
+    this.telemetry = new Telemetry(this.now);
+    this.bootedAt = this.now();
     try {
       this.workflowMtime = statSync(workflow.path).mtimeMs;
     } catch {}
@@ -275,6 +285,7 @@ export class Orchestrator {
         hint: "an automation moved a handed-off issue back to an active state; to request rework, comment or review first",
       });
       await this.tracker.setState(issue, handoff.state).catch((err) => log("warn", "set_state_failed", { error: (err as Error).message }));
+      this.telemetry.event("restored", issue, null, `moved back to ${handoff.state} (was ${issue.state} without new feedback)`);
       writeHandoff(path, { ...handoff, reapplied: true });
     }
     return true;
@@ -328,6 +339,7 @@ export class Orchestrator {
   private stopRun(entry: RunEntry, reason: "terminal" | "inactive") {
     if (entry.stopReason) return;
     log("info", "run_stopped_by_reconciliation", { issue: entry.issue.identifier, reason });
+    this.telemetry.event("stopped", entry.issue, entry.agent, `stopped: issue is ${reason === "terminal" ? "closed" : "no longer active"}`);
     entry.stopReason = reason;
     entry.abort.abort();
   }
@@ -354,11 +366,18 @@ export class Orchestrator {
       lastText: "",
       abort: new AbortController(),
       stopReason: null,
+      phase: "preparing",
+      branch: null,
+      prUrl: null,
+      lastTool: null,
+      toolCalls: 0,
     };
     this.claimed.add(issue.id);
     this.running.set(issue.id, entry);
     this.totals.runs++;
     log("info", "dispatched", { issue: issue.identifier, agent, attempt, state: issue.state });
+    this.telemetry.agent(agent).runs++;
+    this.telemetry.event("dispatched", issue, agent, attempt ? `attempt ${attempt + 1}: ${issue.title}` : issue.title);
     const p = this.runWorker(entry)
       .catch((err): WorkerOutcome => ({ kind: "failed", error: (err as Error).message, rateLimited: false }))
       .then((outcome) => this.onWorkerExit(entry, outcome, exclude))
@@ -393,6 +412,9 @@ export class Orchestrator {
       const session = readSession(ws.path);
       let sessionId = session && session.agent === agent ? session.sessionId : null;
       const pr = ws.isGit ? await this.tracker.findPullRequest(issue, ws.branch).catch(() => null) : null;
+      entry.branch = ws.isGit ? ws.branch : null;
+      entry.prUrl = pr?.url ?? null;
+      entry.phase = "running";
       const feedback = pr || norm(issue.state) === "rework" ? await this.tracker.fetchFeedback(issue, pr).catch(() => "") : "";
       clearReport(ws.path);
       const env = { ...agentEnv(config), ...sandboxEnv(config, ws.path) };
@@ -431,14 +453,24 @@ export class Orchestrator {
         }
         if (entry.stopReason) return { kind: "inactive" };
         denied = result.permissionDenied;
-        if (denied) log("warn", "agent_permission_denied", { issue: issue.identifier, agent, turn, denied });
+        if (denied) {
+          log("warn", "agent_permission_denied", { issue: issue.identifier, agent, turn, denied });
+          this.telemetry.event("denied", issue, agent, `turn ${turn}: not permitted: ${denied}`);
+        }
         // A refused tool call ends some CLIs' turns (grok cancels); resume the session instead of failing.
         if (!result.ok && denied && turn < config.agent.maxTurns) continue;
         if (!result.ok) {
           log("warn", "turn_failed", { issue: issue.identifier, agent, turn, reason: result.reason, error: result.error?.slice(0, 500) });
+          this.telemetry.event("turn_failed", issue, agent, `turn ${turn} ${result.reason}: ${result.error ?? ""}`);
           return { kind: "failed", error: result.error ?? result.reason, rateLimited: result.rateLimited };
         }
         log("info", "turn_completed", { issue: issue.identifier, agent, turn, usage: result.usage });
+        this.telemetry.event(
+          "turn",
+          issue,
+          agent,
+          `turn ${turn} done · ${result.usage.inputTokens}/${result.usage.outputTokens} tokens${result.finalText ? ` · ${result.finalText.slice(0, 160)}` : ""}`,
+        );
 
         const report = readReport(ws.path);
         if (report) return await this.handoff(entry, ws, report, pr);
@@ -462,6 +494,7 @@ export class Orchestrator {
     const config = this.config;
     const { issue, agent } = entry;
     let pr = existingPr;
+    entry.phase = "handing off";
 
     if (ws.isGit && config.handoff.openPullRequest) {
       const { ahead } = await finalizeCommits(ws.path, issue);
@@ -497,6 +530,9 @@ export class Orchestrator {
       reapplied: false,
     });
     this.totals.handoffs++;
+    entry.prUrl = pr?.url ?? null;
+    this.telemetry.agent(agent).handoffs++;
+    this.telemetry.event("handoff", issue, agent, `${report.status}: ${report.summary.slice(0, 200)}`, pr?.url ?? null);
     log("info", "handoff", { issue: issue.identifier, agent, status: report.status, pr: pr?.url });
     return { kind: "handoff", status: report.status, prUrl: pr?.url ?? null };
   }
@@ -505,13 +541,25 @@ export class Orchestrator {
     entry.lastEventAt = this.now();
     if (e.type === "text") entry.lastText = e.text.slice(0, 500);
     if (e.type === "session") entry.sessionId = e.sessionId;
-    if (e.type === "tool") log("debug", "agent_tool", { issue: entry.issue.identifier, agent: entry.agent, tool: e.name, detail: e.detail });
-    if (e.type === "rate_limit") log("warn", "agent_rate_limit", { agent: entry.agent, message: e.message });
+    if (e.type === "tool") {
+      log("debug", "agent_tool", { issue: entry.issue.identifier, agent: entry.agent, tool: e.name, detail: e.detail });
+      entry.lastTool = { name: e.name, detail: e.detail ?? null, at: this.now() };
+      entry.toolCalls++;
+      this.telemetry.agent(entry.agent).toolCalls++;
+    }
+    if (e.type === "rate_limit") {
+      log("warn", "agent_rate_limit", { agent: entry.agent, message: e.message });
+      this.telemetry.event("rate_limit", entry.issue, entry.agent, e.message);
+    }
+    this.telemetry.version++;
   }
 
   private addUsage(entry: RunEntry, u: Usage) {
     entry.usage.inputTokens += u.inputTokens;
     entry.usage.outputTokens += u.outputTokens;
+    const stats = this.telemetry.agent(entry.agent);
+    stats.inputTokens += u.inputTokens;
+    stats.outputTokens += u.outputTokens;
     this.totals.inputTokens += u.inputTokens;
     this.totals.outputTokens += u.outputTokens;
   }
@@ -522,6 +570,22 @@ export class Orchestrator {
     const { issue } = entry;
     this.running.delete(issue.id);
     log("info", "worker_exited", { issue: issue.identifier, agent: entry.agent, outcome: outcome.kind, stop: entry.stopReason });
+    this.telemetry.finish({
+      issue: issue.identifier,
+      title: issue.title,
+      issueUrl: issue.url,
+      agent: entry.agent,
+      outcome: entry.stopReason ? "stopped" : outcome.kind,
+      status: outcome.kind === "handoff" ? outcome.status : null,
+      error: outcome.kind === "failed" ? outcome.error.slice(0, 300) : entry.stopReason ? `stopped: ${entry.stopReason}` : null,
+      prUrl: outcome.kind === "handoff" ? outcome.prUrl : entry.prUrl,
+      attempt: entry.attempt,
+      turns: entry.turn,
+      usage: { ...entry.usage },
+      startedAt: entry.startedAt,
+      endedAt: this.now(),
+    });
+    if (outcome.kind === "failed" && !outcome.rateLimited && !entry.stopReason) this.telemetry.agent(entry.agent).failures++;
 
     if (entry.stopReason === "shutdown") {
       this.claimed.delete(issue.id);
@@ -547,6 +611,7 @@ export class Orchestrator {
       await this.tracker
         .comment(issue, `${MARKER}\n⛔ Conductor gave up after ${attempt} attempts.\n\nLast error: ${why.slice(0, 1500)}`)
         .catch(() => undefined);
+      this.telemetry.event("gave_up", issue, entry.agent, `gave up after ${attempt} attempts: ${why.slice(0, 200)}`);
       await this.tracker.setState(issue, this.config.tracker.blockedState).catch(() => undefined);
       this.release(issue.id);
       return;
@@ -557,6 +622,13 @@ export class Orchestrator {
     } else if (rateLimited) {
       this.router.coolDown(entry.agent, this.now());
       log("warn", "agent_cooling_down", { agent: entry.agent, ms: this.config.agent.rateLimitCooldownMs });
+      this.telemetry.agent(entry.agent).rateLimits++;
+      this.telemetry.event(
+        "cooldown",
+        issue,
+        entry.agent,
+        `${entry.agent} cooling down ${Math.round(this.config.agent.rateLimitCooldownMs / 60000)} min: ${outcome.kind === "failed" ? outcome.error.slice(0, 160) : ""}`,
+      );
       // Try another agent right away; the workspace (and its commits) carries over.
       this.scheduleRetry(issue, attempt, outcome.error, [...new Set([...previousExclude, entry.agent])], 1_000);
     } else {
@@ -588,6 +660,7 @@ export class Orchestrator {
       timer,
     });
     log("info", "retry_scheduled", { issue: issue.identifier, attempt, delayMs, error: error.slice(0, 200) });
+    this.telemetry.event("retry", issue, null, `retry #${attempt} in ${Math.round(delayMs / 1000)}s: ${error.slice(0, 160)}`);
   }
 
   /** Retries that left the queue but have not dispatched yet (awaiting the tracker). */
@@ -638,36 +711,73 @@ export class Orchestrator {
 
   snapshot() {
     const now = this.now();
+    const iso = (t: number) => new Date(t).toISOString();
+    const config = this.config;
+    const cooldowns = this.router.cooldowns(now);
+    const runningBy = (agent: string) => [...this.running.values()].filter((r) => r.agent === agent).length;
     return {
-      generatedAt: new Date(now).toISOString(),
+      generatedAt: iso(now),
+      version: this.telemetry.version,
+      bootedAt: iso(this.bootedAt),
       workflow: this.workflow.path,
-      repo: this.config.tracker.repo,
+      repo: config.tracker.repo,
+      tracker: {
+        kind: config.tracker.kind,
+        team: config.tracker.team || null,
+        project: config.tracker.project || null,
+        reviewState: config.tracker.reviewState,
+        blockedState: config.tracker.blockedState,
+      },
+      limits: {
+        maxConcurrentAgents: config.agent.maxConcurrentAgents,
+        maxTurns: config.agent.maxTurns,
+        maxAttempts: config.agent.maxAttempts,
+        pollIntervalMs: config.polling.intervalMs,
+        stallTimeoutMs: config.agent.stallTimeoutMs,
+        rateLimitCooldownMs: config.agent.rateLimitCooldownMs,
+      },
       counts: { running: this.running.size, retrying: this.retries.size },
       totals: this.totals,
-      cooldowns: Object.fromEntries(
-        Object.entries(this.router.cooldowns(now)).map(([a, until]) => [a, new Date(until).toISOString()]),
-      ),
+      cooldowns: Object.fromEntries(Object.entries(cooldowns).map(([a, until]) => [a, iso(until)])),
+      agents: Object.entries(config.agents).map(([name, a]) => ({
+        name,
+        kind: a.kind,
+        enabled: a.enabled,
+        inRotation: config.routing.default.includes(name),
+        maxConcurrent: a.maxConcurrent,
+        running: runningBy(name),
+        cooldownUntil: cooldowns[name] ? iso(cooldowns[name]!) : null,
+        stats: this.telemetry.statsFor(name),
+      })),
       running: [...this.running.values()].map((r) => ({
         issue: r.issue.identifier,
         title: r.issue.title,
         url: r.issue.url,
         state: r.issue.state,
         agent: r.agent,
+        phase: r.phase,
         attempt: r.attempt,
         turn: r.turn,
+        maxTurns: config.agent.maxTurns,
         sessionId: r.sessionId,
-        startedAt: new Date(r.startedAt).toISOString(),
-        lastEventAt: new Date(r.lastEventAt).toISOString(),
+        branch: r.branch,
+        prUrl: r.prUrl,
+        startedAt: iso(r.startedAt),
+        lastEventAt: iso(r.lastEventAt),
         lastText: r.lastText,
+        lastTool: r.lastTool ? { ...r.lastTool, at: iso(r.lastTool.at) } : null,
+        toolCalls: r.toolCalls,
         usage: r.usage,
       })),
       retrying: [...this.retries.values()].map((r) => ({
         issue: r.identifier,
         attempt: r.attempt,
-        dueAt: new Date(r.dueAt).toISOString(),
+        dueAt: iso(r.dueAt),
         error: r.error,
         exclude: r.exclude,
       })),
+      finished: this.telemetry.finished.map((f) => ({ ...f, startedAt: iso(f.startedAt), endedAt: iso(f.endedAt) })),
+      activity: this.telemetry.activity.slice(0, 100).map((a) => ({ ...a, at: iso(a.at) })),
     };
   }
 }

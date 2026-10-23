@@ -11,7 +11,8 @@
     "start": "bun src/cli.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "bun build src/cli.ts --compile --outfile dist/conductor"
+    "build": "bun build src/cli.ts --compile --outfile dist/conductor",
+    "demo:dashboard": "bun scripts/dashboard-demo.ts"
   },
   "dependencies": {
     "liquidjs": "^10.30.0",

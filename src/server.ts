@@ -1,49 +1,80 @@
-// Optional status server (binds to 127.0.0.1 only).
-//   GET  /                -> small HTML status page
+// Status server, bound to 127.0.0.1 only.
+//   GET  /                -> live dashboard
 //   GET  /api/v1/state    -> JSON snapshot
+//   GET  /api/v1/stream   -> Server-Sent Events: a snapshot whenever something changes
 //   POST /api/v1/refresh  -> run a poll tick now
 
 import type { Orchestrator } from "./orchestrator.ts";
+import { DASHBOARD_HTML } from "./dashboard.ts";
 import { log } from "./log.ts";
 
+/** Reject requests whose Host is not this loopback server (guards against DNS rebinding). */
+export function hostAllowed(host: string | null, port: number): boolean {
+  if (!host) return false;
+  return [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`].includes(host.toLowerCase());
+}
+
 export function startServer(orch: Orchestrator, port: number) {
+  const encoder = new TextEncoder();
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port,
-    async fetch(req) {
+    idleTimeout: 0, // SSE connections stay open
+    fetch(req, srv) {
       const url = new URL(req.url);
+      if (!hostAllowed(req.headers.get("host"), srv.port ?? port)) return new Response("forbidden", { status: 403 });
+
       if (url.pathname === "/api/v1/state" && req.method === "GET") return Response.json(orch.snapshot());
+
+      if (url.pathname === "/api/v1/stream" && req.method === "GET") {
+        let timer: ReturnType<typeof setInterval> | null = null;
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            let lastVersion = -1;
+            let lastSent = 0;
+            const send = () => {
+              const snap = orch.snapshot();
+              // Push on change; otherwise a heartbeat every 15 s keeps proxies and the browser happy.
+              if (snap.version === lastVersion && Date.now() - lastSent < 15_000) return;
+              lastVersion = snap.version;
+              lastSent = Date.now();
+              try {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(snap)}\n\n`));
+              } catch {
+                if (timer) clearInterval(timer);
+              }
+            };
+            send();
+            timer = setInterval(send, 1000);
+          },
+          cancel() {
+            if (timer) clearInterval(timer);
+          },
+        });
+        req.signal.addEventListener("abort", () => timer && clearInterval(timer));
+        return new Response(stream, {
+          headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
+        });
+      }
+
       if (url.pathname === "/api/v1/refresh" && req.method === "POST") {
         void orch.tick();
         return Response.json({ ok: true }, { status: 202 });
       }
-      if (url.pathname === "/" && req.method === "GET") return new Response(page(orch), { headers: { "content-type": "text/html; charset=utf-8" } });
+
+      if (url.pathname === "/" && req.method === "GET") {
+        return new Response(DASHBOARD_HTML, {
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+            // Everything is inline; nothing loads from elsewhere.
+            "content-security-policy":
+              "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'",
+          },
+        });
+      }
       return new Response("not found", { status: 404 });
     },
   });
   log("info", "server_started", { url: `http://127.0.0.1:${server.port}/` });
   return server;
-}
-
-const esc = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-
-function page(orch: Orchestrator): string {
-  const s = orch.snapshot();
-  const rows = s.running
-    .map(
-      (r) =>
-        `<tr><td><a href="${esc(r.url)}">${esc(r.issue)}</a><br><small>${esc(r.title)}</small></td><td>${esc(r.agent)}</td><td>${r.turn}</td><td>${r.attempt}</td><td>${esc(r.lastEventAt)}</td><td><small>${esc(r.lastText)}</small></td></tr>`,
-    )
-    .join("");
-  const retries = s.retrying
-    .map((r) => `<tr><td>${esc(r.issue)}</td><td>${r.attempt}</td><td>${esc(r.dueAt)}</td><td><small>${esc(r.error)}</small></td></tr>`)
-    .join("");
-  return `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="5"><title>Conductor</title>
-<style>body{font:14px system-ui;margin:24px;color:#222;background:#fff}table{border-collapse:collapse;width:100%;margin-bottom:24px}td,th{border-bottom:1px solid #ddd;padding:6px;text-align:left;vertical-align:top}
-@media (prefers-color-scheme:dark){body{background:#111;color:#ddd}td,th{border-color:#333}a{color:#8ab4f8}}</style>
-<h1>Conductor · ${esc(s.repo)}</h1>
-<p>running ${s.counts.running} · retrying ${s.counts.retrying} · handoffs ${s.totals.handoffs} · tokens ${s.totals.inputTokens}/${s.totals.outputTokens}
-${Object.keys(s.cooldowns).length ? `· cooling down: ${esc(Object.keys(s.cooldowns).join(", "))}` : ""}</p>
-<h2>Running</h2><table><tr><th>Issue</th><th>Agent</th><th>Turn</th><th>Attempt</th><th>Last event</th><th>Last message</th></tr>${rows || "<tr><td colspan=6>idle</td></tr>"}</table>
-<h2>Retry queue</h2><table><tr><th>Issue</th><th>Attempt</th><th>Due</th><th>Error</th></tr>${retries || "<tr><td colspan=4>empty</td></tr>"}</table>`;
 }

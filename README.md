@@ -80,7 +80,20 @@ bun src/cli.ts path/to/WORKFLOW.md --once   # 只轮询一次，等派出的任�
 bun run build                               # 编译成单文件 dist/conductor
 ```
 
-状态接口：`GET /api/v1/state`（JSON 快照）、`POST /api/v1/refresh`（立即轮询）。只监听 127.0.0.1。
+### 运行面板
+
+`server.port`（默认示例里是 4141）打开后，浏览器访问 `http://127.0.0.1:4141/` 就是实时面板。单子怎么排、什么状态还是看 Linear / GitHub，面板只显示看板上看不到的东西：
+
+- **总览**：正在运行 / 并发上限、重试排队、已交付、失败、累计 token。
+- **Agent**：每家空闲还是忙（几个 / 上限）、冷却倒计时，以及派单、交付、失败、限流、工具调用、token 的累计数。
+- **正在运行**：每张单子的 agent、阶段、轮次进度、用时、最近一次输出多久前（快到卡死阈值时标黄）、最近一次工具调用、最新一句话，以及看板单子、PR、分支的链接。
+- **重试队列**、**最近结束**（结果、轮次、用时、token、PR）和**动态**（派单、每轮完成、权限被拒、限流、冷却、交付、重试、放弃、状态复原）。
+
+数据通过 SSE（`GET /api/v1/stream`）实时推送，断线时自动改成每 3 秒拉一次。统计只存在内存里，重启后清零。页面不加载任何外部资源，只监听 127.0.0.1，并且只接受 Host 是本机的请求。
+
+其他接口：`GET /api/v1/state`（JSON 快照）、`POST /api/v1/refresh`（立即轮询）。
+
+想不跑真实 agent 先看看面板，可以运行 `bun run demo:dashboard`：用假 agent 模拟几张单子同时在跑，打开 `http://127.0.0.1:4142/`。
 
 ## 配置（WORKFLOW.md）
 
@@ -162,7 +175,9 @@ src/workspace.ts      工作区、hooks、git 分支与推送
 src/sandbox.ts        自带沙箱模式：每家的沙箱参数、禁止读取列表、工作区内包缓存
 docker/               完全放开权限时用的 agent 镜像
 src/workflow.ts       WORKFLOW.md 解析与 prompt 渲染
-src/server.ts         状态页与 JSON 接口
+src/server.ts         面板服务（SSE、JSON 接口）
+src/dashboard.ts      面板页面
+src/telemetry.ts      面板用的动态、最近结束、各 agent 统计
 ```
 
 ## 路线图

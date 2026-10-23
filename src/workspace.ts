@@ -27,12 +27,20 @@ export function branchName(config: Config, issue: Issue): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 40)
     .replace(/-+$/, "");
-  return `${config.workspace.branchPrefix}${issue.number}${slug ? `-${slug}` : ""}`;
+  return `${config.workspace.branchPrefix}${issue.branchKey}${slug ? `-${slug}` : ""}`;
 }
 
 /** Environment for agent child processes: tracker / forge credentials removed. */
 export function agentEnv(config: Config, base: NodeJS.ProcessEnv = process.env): Record<string, string> {
-  const secret = new Set(["GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", config.tracker.tokenEnv]);
+  const secret = new Set([
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "LINEAR_API_KEY",
+    config.tracker.tokenEnv,
+    config.tracker.githubTokenEnv,
+  ]);
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(base)) {
     if (v !== undefined && !secret.has(k)) out[k] = v;
@@ -206,4 +214,33 @@ export async function finalizeCommits(path: string, issue: Issue): Promise<{ ahe
 export async function pushBranch(path: string, branch: string) {
   const r = await git(path, ["push", "--force-with-lease", "-u", "origin", `HEAD:refs/heads/${branch}`]);
   if (r.code !== 0) throw new Error(`git push failed: ${r.out.slice(-500)}`);
+}
+
+// ---------- hand-off marker ----------
+
+/** Written when Conductor hands an issue to review; cleared when an agent picks it up again. */
+export interface HandoffRecord {
+  at: string;
+  state: string;
+  /** Whether Conductor already moved the issue back to `state` once after an automation moved it. */
+  reapplied: boolean;
+}
+
+const HANDOFF_FILE = "handoff.json";
+
+export function readHandoff(path: string): HandoffRecord | null {
+  try {
+    return JSON.parse(readFileSync(join(path, STATE_DIR, HANDOFF_FILE), "utf8")) as HandoffRecord;
+  } catch {
+    return null;
+  }
+}
+
+export function writeHandoff(path: string, record: HandoffRecord) {
+  mkdirSync(join(path, STATE_DIR), { recursive: true });
+  writeFileSync(join(path, STATE_DIR, HANDOFF_FILE), JSON.stringify(record, null, 2));
+}
+
+export function clearHandoff(path: string) {
+  rmSync(join(path, STATE_DIR, HANDOFF_FILE), { force: true });
 }

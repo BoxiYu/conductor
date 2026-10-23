@@ -268,3 +268,33 @@ test("drain waits for a retry that is in flight", async () => {
   expect(tracker.issues.get("16")!.state).toBe("Human Review");
   await orch.stop();
 });
+
+test("a handed-off issue moved back by an automation is held; human feedback releases it", async () => {
+  const { tracker, orch, calls } = setup();
+  tracker.add({ number: 17, title: "held" });
+  await orch.tick();
+  await waitFor(() => tracker.issues.get("17")!.state === "Human Review");
+  await Promise.allSettled(orch.workerPromises.values());
+  expect(calls).toHaveLength(1);
+
+  // An automation (e.g. Linear's "PR opened") moves it back to an active state.
+  tracker.issues.get("17")!.state = "In Progress";
+  await orch.tick();
+  await Bun.sleep(50);
+  expect(calls).toHaveLength(1); // not picked up again
+  expect(tracker.issues.get("17")!.state).toBe("Human Review"); // restored once
+
+  // Moved back again without feedback: still held, and not fought over a second time.
+  tracker.issues.get("17")!.state = "In Progress";
+  await orch.tick();
+  await Bun.sleep(50);
+  expect(calls).toHaveLength(1);
+  expect(tracker.issues.get("17")!.state).toBe("In Progress");
+
+  // A reviewer asks for changes: now it is a real rework request.
+  tracker.activity.set("17", new Date(Date.now() + 1000).toISOString());
+  await orch.tick();
+  await waitFor(() => calls.length === 2);
+  await waitFor(() => tracker.issues.get("17")!.state === "Human Review");
+  await orch.stop();
+});

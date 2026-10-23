@@ -8,6 +8,8 @@ export class MemoryTracker implements Tracker {
   comments: { issueId: string; body: string }[] = [];
   prs = new Map<string, PullRequestRef>();
   feedback = new Map<string, string>();
+  /** issue id -> ISO time of the newest human comment / review */
+  activity = new Map<string, string>();
   private nextPr = 1;
 
   constructor(private readonly config: Config) {}
@@ -16,6 +18,7 @@ export class MemoryTracker implements Tracker {
     const full: Issue = {
       id: String(issue.number),
       identifier: `mem-${issue.number}`,
+      branchKey: String(issue.number),
       description: null,
       state: this.config.tracker.defaultState,
       labels: [...this.config.tracker.requiredLabels],
@@ -66,6 +69,14 @@ export class MemoryTracker implements Tracker {
 
   async findPullRequest(issue: Issue) {
     return this.prs.get(issue.id) ?? null;
+  }
+
+  async latestHumanActivity(issue: Issue) {
+    return this.activity.get(issue.id) ?? null;
+  }
+
+  closingReference(issue: Issue) {
+    return `Closes #${issue.number}`;
   }
 
   async openPullRequest(input: { issue: Issue; branch: string }) {

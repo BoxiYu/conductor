@@ -34,7 +34,9 @@ describe("workflow", () => {
     expect(() => parseWorkflow("---\nagent: {max_turns: 0}\n---\n", "/tmp/W.md")).toThrow(/max_turns/);
     expect(() => parseWorkflow("---\nrouting: {default: [nope]}\n---\n", "/tmp/W.md")).toThrow(/unknown agent/);
     expect(() => parseWorkflow("---\nagents:\n  x: {kind: gpt}\n---\n", "/tmp/W.md")).toThrow(/kind/);
-    expect(validateForDispatch(parseWorkflow("", "/tmp/W.md").config)).toContain("tracker.repo must be set to owner/name");
+    expect(validateForDispatch(parseWorkflow("", "/tmp/W.md").config)).toContain(
+      "tracker.repo must be set to owner/name (the GitHub repo for branches and PRs)",
+    );
   });
 
   test("verify commands are allowed for every agent on top of the git defaults", () => {

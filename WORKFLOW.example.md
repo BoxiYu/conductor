@@ -7,6 +7,14 @@ tracker:
   state_label_prefix: "state:"     # state lives in labels like `state:rework`
   active_states: [Todo, In Progress, Rework]
   terminal_states: [Closed]        # closed issue = done; its workspace is removed
+  # Linear instead (branches and PRs still go to `repo` on GitHub):
+  # kind: linear
+  # team: PY                       # Linear team key; needs $LINEAR_API_KEY
+  # project: ""                    # optional project name filter
+  # active_states: [Todo, In Progress]
+  # review_state: In Review        # must exist in the team's workflow
+  # blocked_state: Blocked
+  # terminal_states: [Done, Canceled, Duplicate]
 
 polling:
   interval_ms: 30000

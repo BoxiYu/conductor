@@ -6,6 +6,8 @@ export interface Issue {
   /** Human identifier used for logs, branches and workspace names, e.g. "conductor-12". */
   identifier: string;
   number: number;
+  /** Goes into the branch name, e.g. "12" (GitHub) or "py-14" (Linear, so its GitHub integration links the PR). */
+  branchKey: string;
   title: string;
   description: string | null;
   /** Derived workflow state, e.g. "Todo", "In Progress", "Human Review", "Rework", "Closed". */
@@ -42,11 +44,20 @@ export type AgentKind = "codex" | "claude" | "agy" | "grok";
 
 export interface Config {
   tracker: {
-    kind: "github" | "memory";
-    /** "owner/name" of the repository whose issues are the work queue. */
+    kind: "github" | "linear" | "memory";
+    /**
+     * "owner/name" of the GitHub repository branches and PRs go to. For `github` its issues are
+     * also the work queue.
+     */
     repo: string;
-    /** Environment variable holding a token. Falls back to `gh auth token`. */
+    /** Environment variable holding the tracker token (GitHub: falls back to `gh auth token`). */
     tokenEnv: string;
+    /** GitHub token variable when the tracker is not GitHub (falls back to `gh auth token`). */
+    githubTokenEnv: string;
+    /** Linear: team key, e.g. "PY". */
+    team: string;
+    /** Linear: only issues in this project (name), empty = whole team. */
+    project: string;
     requiredLabels: string[];
     /** Labels of the form `${statePrefix}<state>` carry workflow state. */
     statePrefix: string;

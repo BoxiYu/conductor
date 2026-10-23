@@ -152,7 +152,8 @@ function buildConfig(raw: Obj, baseDir: string, env: NodeJS.ProcessEnv): Config 
   const server = obj(raw.server, "server");
 
   const kind = str(tracker.kind, "github", env);
-  if (kind !== "github" && kind !== "memory") throw new WorkflowError(`unsupported tracker.kind: ${kind}`);
+  if (kind !== "github" && kind !== "linear" && kind !== "memory") throw new WorkflowError(`unsupported tracker.kind: ${kind}`);
+  const linear = kind === "linear";
 
   const agents = buildAgents(obj(raw.agents, "agents"), env, verifyCommands, sandboxMode === "native" ? NATIVE_AGENT_ARGS : DEFAULT_AGENT_ARGS);
   const defaultRoute = strList(routing.default, Object.keys(agents).filter((k) => agents[k]!.enabled), "routing.default");
@@ -166,14 +167,17 @@ function buildConfig(raw: Obj, baseDir: string, env: NodeJS.ProcessEnv): Config 
     tracker: {
       kind,
       repo: str(tracker.repo, "", env),
-      tokenEnv: str(tracker.token_env, "GITHUB_TOKEN", env),
+      tokenEnv: str(tracker.token_env, linear ? "LINEAR_API_KEY" : "GITHUB_TOKEN", env),
+      githubTokenEnv: str(tracker.github_token_env, "GITHUB_TOKEN", env),
+      team: str(tracker.team, "", env),
+      project: str(tracker.project, "", env),
       requiredLabels: strList(tracker.required_labels, ["conductor"], "tracker.required_labels"),
       statePrefix: str(tracker.state_label_prefix, "state:", env),
-      activeStates: strList(tracker.active_states, ["Todo", "In Progress", "Rework"], "tracker.active_states"),
-      terminalStates: strList(tracker.terminal_states, ["Closed"], "tracker.terminal_states"),
+      activeStates: strList(tracker.active_states, linear ? ["Todo", "In Progress"] : ["Todo", "In Progress", "Rework"], "tracker.active_states"),
+      terminalStates: strList(tracker.terminal_states, linear ? ["Done", "Canceled", "Duplicate"] : ["Closed"], "tracker.terminal_states"),
       defaultState: str(tracker.default_state, "Todo", env),
       inProgressState: str(tracker.in_progress_state, "In Progress", env),
-      reviewState: str(tracker.review_state, "Human Review", env),
+      reviewState: str(tracker.review_state, linear ? "In Review" : "Human Review", env),
       blockedState: str(tracker.blocked_state, "Blocked", env),
     },
     polling: { intervalMs: int(polling.interval_ms, 30_000, "polling.interval_ms") },
@@ -256,9 +260,10 @@ function buildAgents(
 /** Returns a list of problems that block dispatch (empty means OK). */
 export function validateForDispatch(config: Config): string[] {
   const problems: string[] = [];
-  if (config.tracker.kind === "github" && !/^[\w.-]+\/[\w.-]+$/.test(config.tracker.repo)) {
-    problems.push("tracker.repo must be set to owner/name");
+  if (config.tracker.kind !== "memory" && !/^[\w.-]+\/[\w.-]+$/.test(config.tracker.repo)) {
+    problems.push("tracker.repo must be set to owner/name (the GitHub repo for branches and PRs)");
   }
+  if (config.tracker.kind === "linear" && !config.tracker.team.trim()) problems.push("tracker.team must be set to a Linear team key");
   if (config.routing.default.length === 0) problems.push("routing.default has no agents");
   if (!Object.values(config.agents).some((a) => a.enabled)) problems.push("no agents are enabled");
   return problems;

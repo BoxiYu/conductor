@@ -5,7 +5,7 @@
 import { statSync } from "node:fs";
 import type { AgentEvent, Config, Issue, TurnResult, Usage, Workflow } from "./types.ts";
 import type { PullRequestRef, Tracker } from "./tracker/tracker.ts";
-import { norm } from "./tracker/tracker.ts";
+import { MARKER, norm } from "./tracker/tracker.ts";
 import { Router } from "./router.ts";
 import { applySandbox, sandboxEnv } from "./sandbox.ts";
 import { runTurn as defaultRunTurn, type RunTurnOptions } from "./agents/runner.ts";
@@ -14,19 +14,23 @@ import {
   REPORT_FILE,
   afterRun,
   agentEnv,
+  branchName,
+  clearHandoff,
   clearReport,
   finalizeCommits,
   prepareWorkspace,
   pushBranch,
+  readHandoff,
   readReport,
   readSession,
   removeWorkspace,
   workspacePath,
+  writeHandoff,
   writeSession,
 } from "./workspace.ts";
 import { log } from "./log.ts";
 
-export const MARKER = "<!-- conductor -->";
+export { MARKER };
 
 export function protocolFooter(verifyCommands: string[] = []): string {
   const verify = verifyCommands.length
@@ -241,8 +245,39 @@ export class Orchestrator {
     for (const issue of sortForDispatch(candidates)) {
       if (this.availableSlots() <= 0) break;
       if (!this.eligible(issue)) continue;
+      if (await this.heldForReview(issue)) continue;
       this.dispatch(issue, null, []);
     }
+  }
+
+  /**
+   * An issue Conductor handed off is active again. Pick it up only if a human commented or
+   * reviewed after the hand-off (a rework request). Otherwise an automation moved it (e.g.
+   * Linear's "PR opened → In Progress"): leave it, and move it back to the hand-off state once.
+   */
+  private async heldForReview(issue: Issue): Promise<boolean> {
+    let path: string;
+    try {
+      path = workspacePath(this.config.workspace.root, issue.identifier);
+    } catch {
+      return false;
+    }
+    const handoff = readHandoff(path);
+    if (!handoff) return false;
+    const pr = await this.tracker.findPullRequest(issue, branchName(this.config, issue)).catch(() => null);
+    const latest = await this.tracker.latestHumanActivity(issue, pr).catch(() => null);
+    if (latest && Date.parse(latest) > Date.parse(handoff.at)) return false;
+    if (!handoff.reapplied && norm(issue.state) !== norm(handoff.state)) {
+      log("warn", "handoff_state_restored", {
+        issue: issue.identifier,
+        found: issue.state,
+        restored: handoff.state,
+        hint: "an automation moved a handed-off issue back to an active state; to request rework, comment or review first",
+      });
+      await this.tracker.setState(issue, handoff.state).catch((err) => log("warn", "set_state_failed", { error: (err as Error).message }));
+      writeHandoff(path, { ...handoff, reapplied: true });
+    }
+    return true;
   }
 
   private availableSlots() {
@@ -353,6 +388,7 @@ export class Orchestrator {
     }
 
     const ws = await prepareWorkspace(config, issue);
+    clearHandoff(ws.path);
     try {
       const session = readSession(ws.path);
       let sessionId = session && session.agent === agent ? session.sessionId : null;
@@ -436,7 +472,7 @@ export class Orchestrator {
             issue,
             branch: ws.branch,
             title: report.prTitle || `${issue.title} (#${issue.number})`,
-            body: `Closes #${issue.number}\n\n${report.summary}\n\n---\n${MARKER}\n_Implemented by **${agent}** via Conductor._`,
+            body: `${this.tracker.closingReference(issue)}\n\n${report.summary}\n\n---\n${MARKER}\n_Implemented by **${agent}** via Conductor._`,
             draft: config.handoff.draft || report.status === "blocked",
           });
         }
@@ -455,6 +491,11 @@ export class Orchestrator {
     ];
     await this.tracker.comment(issue, lines.filter((l, i) => l !== "" || i > 2).join("\n")).catch(() => undefined);
     await this.tracker.setState(issue, report.status === "done" ? config.tracker.reviewState : config.tracker.blockedState);
+    writeHandoff(ws.path, {
+      at: new Date().toISOString(),
+      state: report.status === "done" ? config.tracker.reviewState : config.tracker.blockedState,
+      reapplied: false,
+    });
     this.totals.handoffs++;
     log("info", "handoff", { issue: issue.identifier, agent, status: report.status, pr: pr?.url });
     return { kind: "handoff", status: report.status, prUrl: pr?.url ?? null };

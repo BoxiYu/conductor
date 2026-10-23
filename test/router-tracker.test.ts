@@ -12,6 +12,7 @@ const issue = (over: Partial<Issue> = {}): Issue => ({
   id: "1",
   identifier: "b-1",
   number: 1,
+  branchKey: "1",
   title: "Fix the thing!",
   description: null,
   state: "Todo",

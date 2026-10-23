@@ -1,15 +1,15 @@
 # Conductor
 
-> Turn GitHub issues into isolated, autonomous coding-agent runs — across **Codex, Claude Code, Antigravity (agy) and Grok**.
+> Turn GitHub or Linear issues into isolated, autonomous coding-agent runs — across **Codex, Claude Code, Antigravity (agy) and Grok**.
 
-Conductor 是一个常驻服务：盯着 GitHub Issues，给每个单子开一个独立工作区，交给编程 agent 去做，做完自动推分支、开 PR、把单子移到人工审核。你管看板，不用盯 agent。
+Conductor 是一个常驻服务：盯着 GitHub Issues 或 Linear，给每个单子开一个独立工作区，交给编程 agent 去做，做完自动推分支、开 PR、把单子移到人工审核。你管看板，不用盯 agent。
 
 设计参考 [openai/symphony](https://github.com/openai/symphony) 的 [SPEC](https://github.com/openai/symphony/blob/main/SPEC.md)，区别在于：
 
 - **多家 agent**：codex / claude / agy / grok 四个 CLI 都能跑，可按标签指定，也可自动轮转。
 - **额度兜底**：某家报限流、容量满、额度用完，就冷却一段时间，同一个工作区立刻换下一家接着做，已有改动都保留。
-- **凭证留在宿主**：agent 只在本地提交代码；推分支、开 PR、改标签、写评论都由 Conductor 完成。agent 子进程里会剥掉 `GITHUB_TOKEN` / `GH_TOKEN`。
-- **GitHub Issues 原生**：状态用 `state:*` 标签表示，关闭 issue 即完成。
+- **凭证留在宿主**：agent 只在本地提交代码；推分支、开 PR、改状态、写评论都由 Conductor 完成。agent 子进程里会剥掉 `GITHUB_TOKEN` / `GH_TOKEN` / `LINEAR_API_KEY`。
+- **两种看板**：GitHub Issues（状态用 `state:*` 标签，关闭即完成）或 Linear（直接用团队自己的工作流状态）。代码和 PR 都在 GitHub。
 
 ## 工作流程
 
@@ -36,6 +36,30 @@ Conductor 是一个常驻服务：盯着 GitHub Issues，给每个单子开一�
 | Closed | issue 已关闭 | 清理工作区 |
 
 可选标签：`agent:claude` 之类指定由哪家处理；`priority:1`…`priority:4` 控制优先级（1 最高）。
+
+## 用 Linear 当看板
+
+`tracker.kind: linear` 时，单子和状态在 Linear，分支和 PR 仍在 `tracker.repo` 指定的 GitHub 仓库。
+
+```yaml
+tracker:
+  kind: linear
+  team: PY                      # Linear 团队 key
+  # project: 洞察频道            # 可选：只接这个项目里的单子
+  repo: owner/site              # 推分支、开 PR 的 GitHub 仓库
+  required_labels: [conductor]  # 只接打了这个标签的单子
+  active_states: [Todo, In Progress]
+  review_state: 待我审           # 交付后移到这里
+  blocked_state: 卡住            # agent 报 blocked 或重试用尽时移到这里
+  # terminal_states: [Done, Canceled, Duplicate]   # 默认
+```
+
+- 需要 `LINEAR_API_KEY`（Linear 设置 → Security & access → Personal API keys）和 GitHub 凭证（`gh` 登录或 `GITHUB_TOKEN`）。两个都不会传给 agent。
+- 启动和 `--check` 时会检查团队存在、上面用到的状态都在，不在就报出团队现有的状态名。
+- 分支名带 Linear 编号（`conductor/py-14-<标题>`），PR 正文写 `Fixes PY-14`：装了 Linear 的 GitHub 集成时，PR 会自动关联，合并后单子自动完成。没装也没关系，Conductor 会把 PR 链接挂到 Linear 单子上。
+- 返工：**先**在 Linear 评论或 PR 评审里写意见，再把单子从「待我审」拖回 `In Progress`（或任何 `active_states`），agent 会带着这些意见、续接原会话接着改。
+- 已交付的单子只有在交付之后有新的人工评论或评审时才会重新开工。原因是 Linear 的 Git 自动化（默认「PR 打开 → In Progress」）会在交付后几秒、甚至十几秒把单子改回 `In Progress`；没有这条规则，Conductor 会把做完的单子再做一遍。遇到这种情况，Conductor 会把单子改回「待我审」一次，并在日志里记 `handoff_state_restored`。**建议**在 Linear 团队设置 → Workflow → Pull request automations 里，把「PR 打开」改成「No action」或你的审核状态。
+- 优先级直接用 Linear 的（Urgent=1 … Low=4）；`agent:claude` 之类的标签照样能指定由哪家处理。
 
 ## 快速开始
 

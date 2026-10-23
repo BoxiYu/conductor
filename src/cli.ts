@@ -4,10 +4,12 @@
 import { parseArgs } from "node:util";
 import { existsSync } from "node:fs";
 import { Orchestrator } from "./orchestrator.ts";
-import { GitHubTracker, resolveGitHubToken } from "./tracker/github.ts";
+import { GitHubForge, GitHubTracker, resolveGitHubToken } from "./tracker/github.ts";
 import { MemoryTracker } from "./tracker/memory.ts";
+import { LinearTracker } from "./tracker/linear.ts";
 import type { Tracker } from "./tracker/tracker.ts";
 import { loadWorkflow, validateForDispatch, WorkflowError } from "./workflow.ts";
+import type { Config } from "./types.ts";
 import { startServer } from "./server.ts";
 import { log } from "./log.ts";
 
@@ -50,16 +52,25 @@ async function main() {
       process.stdout.write(`${found ? "ok " : "MISSING"} agent ${name} (${a.kind}): ${found ?? a.command}\n`);
       if (!found && config.routing.default.includes(name)) problems.push(`agent ${name}: \`${a.command}\` not on PATH`);
     }
+    if (config.tracker.kind === "linear" && problems.length === 0) {
+      try {
+        const t = await makeTracker(config);
+        const linearProblems = t instanceof LinearTracker ? await t.validate() : [];
+        problems.push(...linearProblems);
+        if (!linearProblems.length) process.stdout.write(`ok  linear team ${config.tracker.team}: states found\n`);
+      } catch (err) {
+        problems.push((err as Error).message);
+      }
+    }
     process.stdout.write(problems.length ? `\nproblems:\n- ${problems.join("\n- ")}\n` : "\nworkflow OK\n");
     process.exitCode = problems.length ? 1 : 0;
     return;
   }
 
-  let tracker: Tracker;
-  if (config.tracker.kind === "github") {
-    tracker = new GitHubTracker(config, await resolveGitHubToken(config.tracker.tokenEnv));
-  } else {
-    tracker = new MemoryTracker(config);
+  const tracker = await makeTracker(config);
+  if (tracker instanceof LinearTracker) {
+    const problems = await tracker.validate();
+    if (problems.length) throw new WorkflowError(problems.join("; "));
   }
 
   const orch = new Orchestrator(workflow, { tracker });
@@ -87,6 +98,17 @@ async function main() {
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
+}
+
+async function makeTracker(config: Config): Promise<Tracker> {
+  const t = config.tracker;
+  if (t.kind === "memory") return new MemoryTracker(config);
+  if (t.kind === "linear") {
+    const key = process.env[t.tokenEnv];
+    if (!key) throw new WorkflowError(`no Linear API key: set $${t.tokenEnv}`);
+    return new LinearTracker(config, key, new GitHubForge(t.repo, await resolveGitHubToken(t.githubTokenEnv)));
+  }
+  return new GitHubTracker(config, new GitHubForge(t.repo, await resolveGitHubToken(t.tokenEnv)));
 }
 
 main().catch((err) => {

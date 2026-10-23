@@ -26,6 +26,14 @@ export interface Tracker {
     body: string;
     draft: boolean;
   }): Promise<PullRequestRef>;
+  /** Text for the PR body that links the PR to the issue and closes it on merge. */
+  closingReference(issue: Issue): string;
+  /**
+   * ISO time of the newest human comment on the issue or review on its PR (Conductor's own
+   * comments excluded), or null. Used to tell a real rework request from an automation that
+   * moved a handed-off issue back to an active state.
+   */
+  latestHumanActivity(issue: Issue, pr: PullRequestRef | null): Promise<string | null>;
 }
 
 export interface StateRules {
@@ -37,6 +45,9 @@ export interface StateRules {
 }
 
 export const norm = (s: string) => s.trim().toLowerCase();
+
+/** Comments Conductor writes carry this marker so they are not fed back to agents as feedback. */
+export const MARKER = "<!-- conductor -->";
 
 /** Derive the workflow state of an issue from open/closed and `state:*` labels. */
 export function deriveState(open: boolean, labels: string[], rules: StateRules): string {
